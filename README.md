@@ -7,6 +7,28 @@
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f)
 
+## 界面预览
+
+<p align="center">
+  <img src="docs/screenshots/token-overview.png" alt="Token 消耗、费用、热力图与多设备汇总" width="800">
+</p>
+<p align="center"><sub>Token 消耗、费用估算、近一年热力图与多设备汇总</sub></p>
+
+<table>
+  <tr>
+    <td width="34%" valign="top">
+      <img src="docs/screenshots/cpu-overview.png" alt="CPU 使用率、趋势与核心活动">
+      <br><sub>CPU 使用率、近期趋势与逐核活动</sub>
+    </td>
+    <td width="66%" valign="top">
+      <img src="docs/screenshots/settings.png" alt="ZFStatMenus 原生设置界面">
+      <br><sub>统一的原生设置界面</sub>
+    </td>
+  </tr>
+</table>
+
+> 截图使用确定性的演示数据生成，不包含真实 Token、域名、设备名称、进程记录或个人用量。
+
 ## 功能
 
 - CPU：总体、用户/系统占用、每核活动和高占用进程。
