@@ -36,14 +36,14 @@ final class TokenUsageMonitor: ObservableObject {
     }
 
     func refresh() {
-        refresh(includeHistory: false)
+        refresh(includeHistory: false, forceSync: true)
     }
 
-    private func refresh(includeHistory: Bool) {
+    private func refresh(includeHistory: Bool, forceSync: Bool = false) {
         DispatchQueue.main.async { [weak self] in self?.isLoading = true }
         queue.async { [weak self] in
             guard let self else { return }
-            self.collect(days: includeHistory ? 30 : 2)
+            self.collect(days: includeHistory ? 30 : 2, forceSync: forceSync)
 
             // 首次启动先提供 30 天汇总，再继续补齐 GitHub 风格的近一年热力图。
             if includeHistory {
@@ -52,7 +52,7 @@ final class TokenUsageMonitor: ObservableObject {
         }
     }
 
-    private func collect(days: Int) {
+    private func collect(days: Int, forceSync: Bool = false) {
         let previousDaily = store.daily
         let sources = AppPreferences.shared.enabledTokenSources
         let collector = TokenUsageCollector(store: store)
@@ -74,7 +74,7 @@ final class TokenUsageMonitor: ObservableObject {
             self?.isLoading = false
         }
 
-        syncService.requestSync(localStore: store) { [weak self] remoteDaily in
+        syncService.requestSync(localStore: store, force: forceSync) { [weak self] remoteDaily in
             guard let self else { return }
             self.queue.async {
                 let syncedSnapshot = self.combinedSnapshot(remoteDaily: remoteDaily)
