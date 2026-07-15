@@ -85,6 +85,7 @@ struct AppSectionHeader: View {
 struct AppIconButton: View {
     let systemName: String
     let help: String
+    var isActive = false
     let action: () -> Void
     @State private var isHovered = false
 
@@ -95,11 +96,11 @@ struct AppIconButton: View {
                 .frame(width: 28, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(isHovered ? AppTheme.accentSoft : AppTheme.subtleFill)
+                        .fill(isHovered || isActive ? AppTheme.accentSoft : AppTheme.subtleFill)
                 )
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isHovered ? AppTheme.accent : .secondary)
+        .foregroundStyle(isHovered || isActive ? AppTheme.accent : .secondary)
         .scaleEffect(isHovered ? 1.02 : 1)
         .animation(.easeOut(duration: 0.16), value: isHovered)
         .onHover { isHovered = $0 }

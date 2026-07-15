@@ -4,7 +4,7 @@ const MAX_REQUEST_BYTES = 1_000_000;
 const MAX_SYNC_DAYS = 31;
 const MAX_USAGES_PER_DAY = 200;
 const MAX_SNAPSHOT_ROWS = 20_000;
-const ALLOWED_SOURCES = new Set(["opencode", "zcode", "codex", "claude"]);
+const ALLOWED_SOURCES = new Set(["opencode", "zcode", "codex", "claude", "kimi"]);
 
 type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
 

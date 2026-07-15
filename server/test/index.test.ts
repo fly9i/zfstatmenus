@@ -90,6 +90,19 @@ describe("ZFStatMenus sync Worker", () => {
     expect(body.rows.map((row) => row.inputTokens)).toEqual([100]);
   });
 
+  it("接受并返回 Kimi CLI 用量", async () => {
+    await sync("device-a", "Mac A", 1, 100, token, "kimi");
+
+    const response = await SELF.fetch(
+      "https://example.com/v1/snapshot?from=2026-07-14&to=2026-07-14&excludeDeviceId=unused-device",
+      { headers: authorizationHeaders() },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      rows: [{ source: "kimi", inputTokens: 100 }],
+    });
+  });
+
   it("拒绝不存在的日历日期", async () => {
     const response = await SELF.fetch(
       "https://example.com/v1/snapshot?from=2026-02-31&to=2026-03-01&excludeDeviceId=device-a",
@@ -108,6 +121,7 @@ async function sync(
   revision: number,
   inputTokens: number,
   accessToken = token,
+  source = "codex",
 ): Promise<void> {
   const response = await SELF.fetch("https://example.com/v1/sync", {
     method: "POST",
@@ -122,7 +136,7 @@ async function sync(
         day: "2026-07-14",
         revision,
         usages: [{
-          source: "codex",
+          source,
           provider: "openai",
           model: "gpt-5.2-codex",
           inputTokens,
