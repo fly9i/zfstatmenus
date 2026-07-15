@@ -206,7 +206,7 @@ private struct TokenUsageCollector {
         ORDER BY day, provider, model;
         """
 
-        let rows: [SQLiteTokenRow] = try runSQLiteJSONQuery(databaseURL: databaseURL, query: query)
+        let rows: [SQLiteTokenRow] = try SQLiteJSONQueryRunner.run(databaseURL: databaseURL, query: query)
         return rows.reduce(into: [:]) { result, row in
             let usage = ModelTokenUsage(
                 source: .opencode,
@@ -249,7 +249,7 @@ private struct TokenUsageCollector {
         ORDER BY day, provider, model;
         """
 
-        let rows: [SQLiteTokenRow] = try runSQLiteJSONQuery(databaseURL: databaseURL, query: query)
+        let rows: [SQLiteTokenRow] = try SQLiteJSONQueryRunner.run(databaseURL: databaseURL, query: query)
         return rows.reduce(into: [:]) { result, row in
             let usage = ModelTokenUsage(
                 source: .zcode,
@@ -265,27 +265,6 @@ private struct TokenUsageCollector {
             )
             result[row.day, default: [:]][usage.id] = usage
         }
-    }
-
-    private func runSQLiteJSONQuery<Row: Decodable>(databaseURL: URL, query: String) throws -> [Row] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-readonly", "-json", databaseURL.path, query]
-        let output = Pipe()
-        let errorOutput = Pipe()
-        process.standardOutput = output
-        process.standardError = errorOutput
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorOutput.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorData, encoding: .utf8) ?? "无法读取数据库"
-            throw TokenUsageError.readFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        guard !data.isEmpty else { return [] }
-        return try JSONDecoder().decode([Row].self, from: data)
     }
 
     private func loadClaude(from startDate: Date, through endDate: Date) throws -> [String: [String: ModelTokenUsage]] {
@@ -447,6 +426,22 @@ private struct TokenUsageCollector {
                 mergeUsage(usage, into: &destination[key, default: [:]])
             }
         }
+    }
+}
+
+enum SQLiteJSONQueryRunner {
+    static func run<Row: Decodable>(databaseURL: URL, query: String) throws -> [Row] {
+        let result = try ProcessOutputRunner.run(
+            path: "/usr/bin/sqlite3",
+            arguments: ["-readonly", "-json", databaseURL.path, query]
+        )
+
+        guard result.terminationStatus == 0 else {
+            let message = String(data: result.standardError, encoding: .utf8) ?? "无法读取数据库"
+            throw TokenUsageError.readFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard !result.standardOutput.isEmpty else { return [] }
+        return try JSONDecoder().decode([Row].self, from: result.standardOutput)
     }
 }
 

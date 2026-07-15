@@ -201,23 +201,9 @@ final class ProcessMonitor {
     // MARK: - Helpers
 
     private func runCommand(_ path: String, args: [String]) -> String? {
-        let proc = Process()
-        proc.launchPath = path
-        proc.arguments = args
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-
-        do {
-            try proc.run()
-        } catch {
-            return nil
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-
-        return String(data: data, encoding: .utf8)
+        guard let result = try? ProcessOutputRunner.run(path: path, arguments: args),
+              result.terminationStatus == 0 else { return nil }
+        return String(data: result.standardOutput, encoding: .utf8)
     }
 
     private func appIcon(for pid: Int32) -> NSImage? {
@@ -228,5 +214,43 @@ final class ProcessMonitor {
             iconCache[pid] = icon
         }
         return icon
+    }
+}
+
+struct ProcessOutput {
+    let standardOutput: Data
+    let standardError: Data
+    let terminationStatus: Int32
+}
+
+enum ProcessOutputRunner {
+    static func run(path: String, arguments: [String]) throws -> ProcessOutput {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+
+        let output = Pipe()
+        let errorOutput = Pipe()
+        process.standardOutput = output
+        process.standardError = errorOutput
+        defer {
+            try? output.fileHandleForReading.close()
+            try? output.fileHandleForWriting.close()
+            try? errorOutput.fileHandleForReading.close()
+            try? errorOutput.fileHandleForWriting.close()
+        }
+
+        try process.run()
+        try? output.fileHandleForWriting.close()
+        try? errorOutput.fileHandleForWriting.close()
+
+        let standardOutput = output.fileHandleForReading.readDataToEndOfFile()
+        let standardError = errorOutput.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return ProcessOutput(
+            standardOutput: standardOutput,
+            standardError: standardError,
+            terminationStatus: process.terminationStatus
+        )
     }
 }
