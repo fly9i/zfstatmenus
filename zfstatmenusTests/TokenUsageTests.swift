@@ -424,6 +424,16 @@ final class TokenUsageTests: XCTestCase {
         )
     }
 
+    func testTokenSyncRetryPolicyUsesBoundedBackoff() {
+        XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 0), 30)
+        XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 1), 30)
+        XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 2), 60)
+        XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 3), 120)
+        XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 4), 300)
+        XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 5), 900)
+        XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 100), 900)
+    }
+
     func testHeatmapHoverSelectionLifecycle() {
         let first = DailyTokenUsage(
             date: Date(timeIntervalSince1970: 1_000),

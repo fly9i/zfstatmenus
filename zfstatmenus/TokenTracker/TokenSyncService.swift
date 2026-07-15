@@ -67,6 +67,8 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
     private var lastAttemptAt: Date?
     private var nextRetryAt: Date?
     private var failureCount = 0
+    private var retryGeneration = 0
+    private var retryWorkItem: DispatchWorkItem?
     private var currentStatus: TokenSyncStatus
 
     private init() {
@@ -110,8 +112,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
 
         queue.async { [weak self] in
             guard let self else { return }
-            failureCount = 0
-            nextRetryAt = nil
+            resetRetryState()
             if !enabled {
                 publish(.disabled)
                 return
@@ -187,12 +188,16 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
                     do {
                         let user = try await TokenSyncHTTPClient(configuration: configuration).verify()
                         self.queue.async {
+                            self.resetRetryState()
                             self.publish(TokenSyncStatus(
                                 phase: .pending,
                                 message: "认证成功 · \(user)",
                                 pendingDays: self.currentStatus.pendingDays,
                                 lastSuccessAt: self.currentStatus.lastSuccessAt
                             ))
+                            if let latestStore = self.latestStore {
+                                self.startSync(localStore: latestStore, force: true, completion: nil)
+                            }
                             DispatchQueue.main.async { completion(.success(user)) }
                         }
                     } catch {
@@ -221,6 +226,9 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
         if isSyncing {
             rerunAfterCurrentSync = true
             return
+        }
+        if force {
+            cancelScheduledRetry()
         }
         if !force, let nextRetryAt, nextRetryAt > Date() {
             return
@@ -273,8 +281,8 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
                     self.queue.async {
                         self.isSyncing = false
                         self.failureCount += 1
-                        let delays: [TimeInterval] = [30, 60, 120, 300, 900]
-                        self.nextRetryAt = Date().addingTimeInterval(delays[min(self.failureCount - 1, delays.count - 1)])
+                        let delay = TokenSyncRetryPolicy.delay(failureCount: self.failureCount)
+                        self.scheduleRetry(after: delay, completion: completion)
                         let pendingCount = (try? TokenSyncSQLiteStore().pendingDays().count) ?? pending.count
                         self.publishFailure(error, pendingDays: pendingCount)
                         self.runDeferredSyncIfNeeded(completion: completion)
@@ -299,8 +307,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
             let pendingCount = try sqliteStore.pendingDays().count
 
             isSyncing = false
-            failureCount = 0
-            nextRetryAt = nil
+            resetRetryState()
             publish(TokenSyncStatus(
                 phase: pendingCount == 0 ? .synced : .pending,
                 message: pendingCount == 0 ? "已同步" : "待同步 \(pendingCount) 天",
@@ -323,6 +330,38 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
         guard rerunAfterCurrentSync, let latestStore else { return }
         rerunAfterCurrentSync = false
         startSync(localStore: latestStore, force: true, completion: completion)
+    }
+
+    private func scheduleRetry(
+        after delay: TimeInterval,
+        completion: (([String: [String: ModelTokenUsage]]) -> Void)?
+    ) {
+        retryGeneration += 1
+        let generation = retryGeneration
+        retryWorkItem?.cancel()
+        nextRetryAt = Date().addingTimeInterval(delay)
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.retryGeneration == generation else { return }
+            self.retryWorkItem = nil
+            self.nextRetryAt = nil
+            guard let latestStore = self.latestStore else { return }
+            self.startSync(localStore: latestStore, force: true, completion: completion)
+        }
+        retryWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func cancelScheduledRetry() {
+        retryGeneration += 1
+        retryWorkItem?.cancel()
+        retryWorkItem = nil
+        nextRetryAt = nil
+    }
+
+    private func resetRetryState() {
+        cancelScheduledRetry()
+        failureCount = 0
     }
 
     private func loadConfiguration() throws -> TokenSyncConfiguration {
@@ -389,6 +428,14 @@ private struct TokenSyncConfiguration {
     let token: String
     let deviceId: String
     let deviceName: String
+}
+
+enum TokenSyncRetryPolicy {
+    private static let delays: [TimeInterval] = [30, 60, 120, 300, 900]
+
+    static func delay(failureCount: Int) -> TimeInterval {
+        delays[min(max(failureCount, 1) - 1, delays.count - 1)]
+    }
 }
 
 private struct TokenSyncPendingDay {
@@ -536,7 +583,13 @@ private struct TokenSyncHTTPClient {
     }
 
     private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError {
+            throw TokenSyncError.network(error.localizedDescription)
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TokenSyncError.network("服务器响应无效")
         }
