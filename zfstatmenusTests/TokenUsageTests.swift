@@ -1,5 +1,6 @@
 import XCTest
 import SQLite3
+import Darwin
 @testable import ZFStatMenus
 
 final class TokenUsageTests: XCTestCase {
@@ -399,6 +400,30 @@ final class TokenUsageTests: XCTestCase {
         )
     }
 
+    func testSQLiteJSONQueryRunnerDoesNotLeakFileDescriptors() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let databaseURL = folder.appendingPathComponent("probe.sqlite3")
+        TokenUsageStore().save(databaseURL: databaseURL)
+
+        let descriptorsBefore = openFileDescriptorCount()
+        for _ in 0..<20 {
+            let rows: [SQLiteProbeRow] = try SQLiteJSONQueryRunner.run(
+                databaseURL: databaseURL,
+                query: "SELECT 1 AS value"
+            )
+            XCTAssertEqual(rows, [SQLiteProbeRow(value: 1)])
+        }
+        let descriptorsAfter = openFileDescriptorCount()
+
+        XCTAssertLessThanOrEqual(
+            descriptorsAfter,
+            descriptorsBefore + 2,
+            "重复执行 sqlite3 查询不应持续占用 Pipe 文件描述符"
+        )
+    }
+
     func testHeatmapHoverSelectionLifecycle() {
         let first = DailyTokenUsage(
             date: Date(timeIntervalSince1970: 1_000),
@@ -429,6 +454,18 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertEqual(tokenHeatLevel(80_000_000), 2)
         XCTAssertEqual(tokenHeatLevel(99_999_999), 2)
         XCTAssertEqual(tokenHeatLevel(100_000_000), 3)
+    }
+}
+
+private struct SQLiteProbeRow: Decodable, Equatable {
+    let value: Int
+}
+
+private func openFileDescriptorCount() -> Int {
+    (0..<Int(getdtablesize())).reduce(into: 0) { count, descriptor in
+        if fcntl(Int32(descriptor), F_GETFD) != -1 {
+            count += 1
+        }
     }
 }
 
