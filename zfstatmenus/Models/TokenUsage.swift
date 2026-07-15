@@ -5,6 +5,7 @@ enum TokenSource: String, CaseIterable, Codable, Hashable {
     case zcode
     case codex
     case claude
+    case kimi
 
     var displayName: String {
         switch self {
@@ -12,6 +13,7 @@ enum TokenSource: String, CaseIterable, Codable, Hashable {
         case .zcode: return "ZCode"
         case .codex: return "Codex"
         case .claude: return "Claude Code"
+        case .kimi: return "Kimi CLI"
         }
     }
 }

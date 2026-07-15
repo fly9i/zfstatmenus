@@ -14,6 +14,7 @@ enum PrefKey: String {
     case tokenUSDToCNYRate = "tokenUSDToCNYRate"
     case tokenStatusItemIntroduced = "tokenStatusItemIntroduced"
     case tokenZCodeSourceIntroduced = "tokenZCodeSourceIntroduced"
+    case tokenKimiSourceIntroduced = "tokenKimiSourceIntroduced"
     case tokenSyncEnabled = "tokenSyncEnabled"
     case tokenSyncServerURL = "tokenSyncServerURL"
     case tokenSyncDeviceID = "tokenSyncDeviceID"
@@ -34,7 +35,7 @@ final class AppPreferences {
             PrefKey.monitorInterval.rawValue: 1.0,
             PrefKey.tokenRefreshInterval.rawValue: 60.0,
             PrefKey.enabledStatusItems.rawValue: ["cpu", "memory", "network"],
-            PrefKey.enabledTokenTrackers.rawValue: ["opencode", "zcode", "codex", "claude"],
+            PrefKey.enabledTokenTrackers.rawValue: ["opencode", "zcode", "codex", "claude", "kimi"],
             PrefKey.statusItemOrder.rawValue: ["cpu", "memory", "network", "token"],
             PrefKey.launchAtLogin.rawValue: false,
             PrefKey.showSparkline.rawValue: true,
@@ -63,6 +64,14 @@ final class AppPreferences {
             sources.insert(.zcode)
             enabledTokenSources = sources
             defaults.set(true, forKey: PrefKey.tokenZCodeSourceIntroduced.rawValue)
+        }
+
+        // 新增 Kimi CLI 采集源时默认启用一次，之后继续尊重用户在设置中的选择。
+        if !defaults.bool(forKey: PrefKey.tokenKimiSourceIntroduced.rawValue) {
+            var sources = enabledTokenSources
+            sources.insert(.kimi)
+            enabledTokenSources = sources
+            defaults.set(true, forKey: PrefKey.tokenKimiSourceIntroduced.rawValue)
         }
     }
 

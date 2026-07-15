@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct PopoverPage<Content: View>: View {
@@ -402,6 +403,8 @@ struct TokenDetailView: View {
     @ObservedObject private var syncService = TokenSyncService.shared
     @AppStorage("tokenDisplayCurrency") private var currency = "both"
     @AppStorage("tokenUSDToCNYRate") private var usdToCNYRate = 7.2
+    @AppStorage("tokenShowDeviceBreakdown") private var showsDeviceBreakdown = true
+    @State private var didCopyShareImage = false
 
     var body: some View {
         PopoverPage {
@@ -440,8 +443,21 @@ struct TokenDetailView: View {
                     AppIconButton(systemName: "arrow.clockwise", help: "刷新 Token 数据") {
                         monitor.refresh()
                     }
+                    AppIconButton(
+                        systemName: "desktopcomputer",
+                        help: showsDeviceBreakdown ? "隐藏各设备 Token 消耗" : "显示各设备 Token 消耗",
+                        isActive: showsDeviceBreakdown
+                    ) {
+                        showsDeviceBreakdown.toggle()
+                    }
                     AppIconButton(systemName: "gearshape", help: "打开设置") {
                         AppWindowActions.openSettings()
+                    }
+                    AppIconButton(
+                        systemName: didCopyShareImage ? "checkmark" : "square.and.arrow.up",
+                        help: didCopyShareImage ? "已复制统计图片" : "复制 Token 统计图片"
+                    ) {
+                        copyTokenOverview()
                     }
                     AppIconButton(systemName: "power", help: "退出 ZFStatMenus") {
                         AppWindowActions.quit()
@@ -454,21 +470,24 @@ struct TokenDetailView: View {
                         value: monitor.snapshot.todayTokens,
                         cost: costText(last: 1),
                         dayCount: 1,
-                        devices: monitor.deviceUsages
+                        devices: monitor.deviceUsages,
+                        showsDevices: showsDeviceBreakdown
                     )
                     TokenSummaryCard(
                         title: "过去 7 天",
                         value: monitor.snapshot.last7DaysTokens,
                         cost: costText(last: 7),
                         dayCount: 7,
-                        devices: monitor.deviceUsages
+                        devices: monitor.deviceUsages,
+                        showsDevices: showsDeviceBreakdown
                     )
                     TokenSummaryCard(
                         title: "过去 30 天",
                         value: monitor.snapshot.last30DaysTokens,
                         cost: costText(last: 30),
                         dayCount: 30,
-                        devices: monitor.deviceUsages
+                        devices: monitor.deviceUsages,
+                        showsDevices: showsDeviceBreakdown
                     )
                 }
 
@@ -483,8 +502,20 @@ struct TokenDetailView: View {
                 .appPanel(padding: 13)
 
                 HStack(alignment: .top, spacing: 12) {
-                    sourceSection(title: "今日来源", dayCount: 1)
-                    sourceSection(title: "过去 30 天来源", dayCount: 30)
+                    TokenSourceSection(
+                        title: "今日来源",
+                        dayCount: 1,
+                        snapshot: monitor.snapshot,
+                        currency: currency,
+                        usdToCNYRate: usdToCNYRate
+                    )
+                    TokenSourceSection(
+                        title: "过去 30 天来源",
+                        dayCount: 30,
+                        snapshot: monitor.snapshot,
+                        currency: currency,
+                        usdToCNYRate: usdToCNYRate
+                    )
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -549,10 +580,6 @@ struct TokenDetailView: View {
         }
     }
 
-    private func sourceColor(_ source: TokenSource) -> Color {
-        AppTheme.accent
-    }
-
     private var syncStatusHelp: String {
         var values = [syncService.status.message]
         if syncService.status.pendingDays > 0 {
@@ -583,7 +610,36 @@ struct TokenDetailView: View {
         Array(displayedModelsLast30Days.prefix(20))
     }
 
-    private func sourceSection(title: String, dayCount: Int) -> some View {
+    private func copyTokenOverview() {
+        let copied = TokenShareSnapshotRenderer.copyToPasteboard(
+            snapshot: monitor.snapshot,
+            devices: monitor.deviceUsages,
+            syncStatus: syncService.status,
+            currency: currency,
+            usdToCNYRate: usdToCNYRate,
+            showsDevices: showsDeviceBreakdown
+        )
+        guard copied else {
+            NSSound.beep()
+            return
+        }
+
+        didCopyShareImage = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            didCopyShareImage = false
+        }
+    }
+}
+
+private struct TokenSourceSection: View {
+    let title: String
+    let dayCount: Int
+    let snapshot: TokenUsageSnapshot
+    let currency: String
+    let usdToCNYRate: Double
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             AppSectionHeader(title: title, trailing: "≥ 1K")
 
@@ -591,7 +647,7 @@ struct TokenDetailView: View {
                 TokenCostColumnHeader(leftTitle: "来源", currency: currency)
                 Divider().overlay(AppTheme.border)
                 let sources = sortedTokenSourcesForDisplay(
-                    monitor.snapshot,
+                    snapshot,
                     last: dayCount,
                     usdToCNYRate: usdToCNYRate
                 )
@@ -604,9 +660,9 @@ struct TokenDetailView: View {
                     ForEach(Array(sources.enumerated()), id: \.element) { index, source in
                         SourceTokenCostRow(
                             source: source,
-                            color: sourceColor(source),
-                            tokens: monitor.snapshot.totalTokens(for: source, last: dayCount),
-                            estimate: monitor.snapshot.apiCost(for: source, last: dayCount),
+                            color: AppTheme.accent,
+                            tokens: snapshot.totalTokens(for: source, last: dayCount),
+                            estimate: snapshot.apiCost(for: source, last: dayCount),
                             currency: currency,
                             usdToCNYRate: usdToCNYRate
                         )
@@ -620,6 +676,143 @@ struct TokenDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .appPanel(padding: 12)
+    }
+}
+
+private struct TokenShareSnapshotView: View {
+    let snapshot: TokenUsageSnapshot
+    let devices: [DeviceTokenUsageSummary]
+    let syncStatus: TokenSyncStatus
+    let currency: String
+    let usdToCNYRate: Double
+    let showsDevices: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image("TokenGlyph")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(width: 34, height: 34)
+                    .background(AppTheme.accentSoft, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Token 活动")
+                        .font(.system(size: 17, weight: .semibold))
+                        .tracking(-0.2)
+                    Text("本机与已同步设备的综合统计")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 6) {
+                    TokenSyncStatusSymbol(status: syncStatus)
+                    Text(syncStatus.message)
+                        .lineLimit(1)
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(AppTheme.subtleFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+
+            HStack(spacing: 10) {
+                summaryCard(title: "今日", value: snapshot.todayTokens, dayCount: 1)
+                summaryCard(title: "过去 7 天", value: snapshot.last7DaysTokens, dayCount: 7)
+                summaryCard(title: "过去 30 天", value: snapshot.last30DaysTokens, dayCount: 30)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                AppSectionHeader(title: "消耗热力图", subtitle: "近一年 Token 消耗", trailing: "近一年")
+                TokenCalendarHeatmap(
+                    days: snapshot.days,
+                    currency: currency,
+                    usdToCNYRate: usdToCNYRate
+                )
+            }
+            .appPanel(padding: 13)
+
+            HStack(alignment: .top, spacing: 12) {
+                TokenSourceSection(
+                    title: "今日来源",
+                    dayCount: 1,
+                    snapshot: snapshot,
+                    currency: currency,
+                    usdToCNYRate: usdToCNYRate
+                )
+                TokenSourceSection(
+                    title: "过去 30 天来源",
+                    dayCount: 30,
+                    snapshot: snapshot,
+                    currency: currency,
+                    usdToCNYRate: usdToCNYRate
+                )
+            }
+        }
+        .frame(width: AppTheme.tokenPopoverWidth - 40, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .background {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(AppTheme.canvas)
+                .shadow(color: Color.black.opacity(0.14), radius: 18, y: 8)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+        }
+        .padding(28)
+    }
+
+    private func summaryCard(title: String, value: Int64, dayCount: Int) -> some View {
+        TokenSummaryCard(
+            title: title,
+            value: value,
+            cost: formatTokenCost(
+                snapshot.apiCost(last: dayCount),
+                currency: currency,
+                usdToCNY: usdToCNYRate
+            ),
+            dayCount: dayCount,
+            devices: devices,
+            showsDevices: showsDevices
+        )
+    }
+}
+
+@MainActor
+private enum TokenShareSnapshotRenderer {
+    static func copyToPasteboard(
+        snapshot: TokenUsageSnapshot,
+        devices: [DeviceTokenUsageSummary],
+        syncStatus: TokenSyncStatus,
+        currency: String,
+        usdToCNYRate: Double,
+        showsDevices: Bool
+    ) -> Bool {
+        let content = TokenShareSnapshotView(
+            snapshot: snapshot,
+            devices: devices,
+            syncStatus: syncStatus,
+            currency: currency,
+            usdToCNYRate: usdToCNYRate,
+            showsDevices: showsDevices
+        )
+        .environment(\.colorScheme, currentColorScheme)
+
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let image = renderer.nsImage else { return false }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.writeObjects([image])
+    }
+
+    private static var currentColorScheme: ColorScheme {
+        NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
     }
 }
 
@@ -804,6 +997,7 @@ private struct TokenSummaryCard: View {
     let cost: String
     let dayCount: Int
     let devices: [DeviceTokenUsageSummary]
+    let showsDevices: Bool
 
     private var sortedDevices: [DeviceTokenUsageSummary] {
         devices.sorted {
@@ -834,7 +1028,7 @@ private struct TokenSummaryCard: View {
             Text(cost)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-            if !sortedDevices.isEmpty {
+            if showsDevices && !sortedDevices.isEmpty {
                 Divider()
                     .overlay(AppTheme.border)
                     .padding(.vertical, 2)

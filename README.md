@@ -34,7 +34,7 @@
 - CPU：总体、用户/系统占用、每核活动和高占用进程。
 - 内存：已用容量、压力与高占用进程。
 - 网络：实时上传/下载速率和近期趋势。
-- Token：读取 OpenCode、ZCode、Codex CLI、Claude Code 的本地统计。
+- Token：读取 OpenCode、ZCode、Codex CLI、Claude Code、Kimi CLI 的本地统计。
 - 费用估算：按普通输入、缓存读取、缓存写入、输出/推理 Token 计算公开 API 等价费用。
 - 历史视图：今日、过去 7 天、过去 30 天、近一年热力图和来源/模型明细。
 - 本地 SQLite 缓存：增量采集，避免每次刷新重新扫描全部历史。
@@ -49,8 +49,9 @@
 | ZCode | `~/.zcode/cli/db/db.sqlite` | 读取 `model_usage` |
 | Codex CLI | `~/.codex/sessions/` | 增量解析 JSONL |
 | Claude Code | `~/.claude/projects/` | 解析 JSONL 并按请求去重 |
+| Kimi CLI | `~/.kimi-code/sessions/`、`~/.kimi/sessions/` | 解析新版与旧版 `wire.jsonl` |
 
-ZCode 与 Codex 的输入/输出统计会拆分缓存和推理部分，避免重复计数。缺少可信公开价格的内部型号或订阅别名会显示“未定价”，不会猜价。
+ZCode、Codex 与 Kimi CLI 的输入/输出统计会按本地记录拆分缓存等分类，避免重复计数。缺少可信公开价格的内部型号或订阅别名会显示“未定价”，不会猜价。
 
 ## 安装与运行
 

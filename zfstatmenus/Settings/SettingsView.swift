@@ -365,6 +365,7 @@ struct TokenSettingsView: View {
     @State private var zcodeEnabled = true
     @State private var codexEnabled = true
     @State private var claudeEnabled = true
+    @State private var kimiEnabled = true
 
     var body: some View {
         SettingsPage(
@@ -379,6 +380,8 @@ struct TokenSettingsView: View {
                 SourceToggle(title: "Codex CLI", path: "~/.codex/sessions/", isOn: $codexEnabled)
                 SettingsDivider()
                 SourceToggle(title: "Claude Code", path: "~/.claude/projects/", isOn: $claudeEnabled)
+                SettingsDivider()
+                SourceToggle(title: "Kimi CLI", path: "~/.kimi-code/sessions/", isOn: $kimiEnabled)
             }
 
             SettingsGroup(title: "刷新与费用") {
@@ -420,6 +423,7 @@ struct TokenSettingsView: View {
         .onChange(of: zcodeEnabled) { _ in saveSources() }
         .onChange(of: codexEnabled) { _ in saveSources() }
         .onChange(of: claudeEnabled) { _ in saveSources() }
+        .onChange(of: kimiEnabled) { _ in saveSources() }
     }
 
     private func loadSources() {
@@ -428,6 +432,7 @@ struct TokenSettingsView: View {
         zcodeEnabled = sources.contains(.zcode)
         codexEnabled = sources.contains(.codex)
         claudeEnabled = sources.contains(.claude)
+        kimiEnabled = sources.contains(.kimi)
     }
 
     private func saveSources() {
@@ -436,6 +441,7 @@ struct TokenSettingsView: View {
         if zcodeEnabled { sources.insert(.zcode) }
         if codexEnabled { sources.insert(.codex) }
         if claudeEnabled { sources.insert(.claude) }
+        if kimiEnabled { sources.insert(.kimi) }
         AppPreferences.shared.enabledTokenSources = sources
     }
 }

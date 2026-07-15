@@ -117,6 +117,41 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertEqual(tokens.totalTokens, 185_264)
     }
 
+    func testKimiCurrentUsageRecordPreservesTokenCategories() throws {
+        let data = try XCTUnwrap(
+            """
+            {"type":"usage.record","model":"kimi-code/kimi-for-coding-highspeed","usage":{"inputOther":4133,"output":106,"inputCacheRead":17920,"inputCacheCreation":256},"usageScope":"turn","time":1784109696904}
+            """.data(using: .utf8)
+        )
+
+        let event = try XCTUnwrap(parseKimiUsageEvent(data))
+
+        XCTAssertEqual(event.provider, "kimi-code")
+        XCTAssertEqual(event.model, "kimi-for-coding-highspeed")
+        XCTAssertEqual(
+            event.tokens,
+            TokenBreakdown(input: 4_133, cachedInput: 17_920, cacheWrite: 256, output: 106)
+        )
+        XCTAssertEqual(event.date.timeIntervalSince1970, 1_784_109_696.904, accuracy: 0.001)
+    }
+
+    func testKimiLegacyStatusUpdateIsSupported() throws {
+        let data = try XCTUnwrap(
+            """
+            {"timestamp":1781518069.150505,"message":{"type":"StatusUpdate","payload":{"token_usage":{"input_other":5069,"output":192,"input_cache_read":9216,"input_cache_creation":0},"message_id":"chatcmpl-test"}}}
+            """.data(using: .utf8)
+        )
+
+        let event = try XCTUnwrap(parseKimiUsageEvent(data))
+
+        XCTAssertEqual(event.id, "legacy|chatcmpl-test")
+        XCTAssertEqual(event.model, "kimi-for-coding")
+        XCTAssertEqual(
+            event.tokens,
+            TokenBreakdown(input: 5_069, cachedInput: 9_216, cacheWrite: 0, output: 192)
+        )
+    }
+
     func testOpenAICostSeparatesCachedAndOutputTokens() {
         let usage = ModelTokenUsage(
             source: .opencode,

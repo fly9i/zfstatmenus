@@ -181,6 +181,17 @@ private struct TokenUsageCollector {
             updatedStore.remove(source: .codex)
         }
 
+        if sources.contains(.kimi) {
+            do {
+                let values = try loadKimi(from: startDate, through: endDate)
+                updatedStore.replace(source: .kimi, from: startDate, through: endDate, with: values)
+            } catch {
+                errors.append("Kimi CLI：\(error.localizedDescription)")
+            }
+        } else {
+            updatedStore.remove(source: .kimi)
+        }
+
         return (updatedStore, errors)
     }
 
@@ -413,6 +424,52 @@ private struct TokenUsageCollector {
         return (daily, updatedCache)
     }
 
+    private func loadKimi(
+        from startDate: Date,
+        through endDate: Date
+    ) throws -> [String: [String: ModelTokenUsage]] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let roots = [
+            home.appendingPathComponent(".kimi-code/sessions"),
+            home.appendingPathComponent(".kimi/sessions"),
+        ]
+        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
+        let endExclusive = Calendar.current.date(byAdding: .day, value: 1, to: endDate) ?? endDate
+        var events: [String: KimiUsageEvent] = [:]
+
+        for root in roots where FileManager.default.fileExists(atPath: root.path) {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for case let fileURL as URL in enumerator where fileURL.lastPathComponent == "wire.jsonl" {
+                let values = try? fileURL.resourceValues(forKeys: Set(keys))
+                guard values?.isRegularFile == true,
+                      (values?.contentModificationDate ?? .distantPast) >= startDate else { continue }
+
+                try JSONLReader.read(fileURL) { data in
+                    guard let event = parseKimiUsageEvent(data),
+                          event.date >= startDate,
+                          event.date < endExclusive else { return }
+                    let key = event.id.hasPrefix("legacy|") ? event.id : "\(fileURL.path)|\(event.id)"
+                    events[key] = event
+                }
+            }
+        }
+
+        return events.values.reduce(into: [:]) { result, event in
+            let usage = ModelTokenUsage(
+                source: .kimi,
+                provider: event.provider,
+                model: event.model,
+                tokens: event.tokens
+            )
+            mergeUsage(usage, into: &result[dayKey(event.date), default: [:]])
+        }
+    }
+
     private func merge(
         _ source: [String: [String: ModelTokenUsage]],
         into destination: inout [String: [String: ModelTokenUsage]],
@@ -427,6 +484,62 @@ private struct TokenUsageCollector {
             }
         }
     }
+}
+
+struct KimiUsageEvent: Equatable {
+    let id: String
+    let date: Date
+    let provider: String
+    let model: String
+    let tokens: TokenBreakdown
+}
+
+func parseKimiUsageEvent(_ data: Data) -> KimiUsageEvent? {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+
+    if object["type"] as? String == "usage.record",
+       (object["usageScope"] as? String) == "turn",
+       let rawModel = object["model"] as? String,
+       let usage = object["usage"] as? [String: Any] {
+        let milliseconds = int64(object["time"])
+        guard milliseconds > 0 else { return nil }
+        let parts = rawModel.split(separator: "/", maxSplits: 1).map(String.init)
+        let provider = parts.count == 2 ? parts[0] : "kimi-code"
+        let model = parts.count == 2 ? parts[1] : rawModel
+        let tokens = TokenBreakdown(
+            input: int64(usage["inputOther"]),
+            cachedInput: int64(usage["inputCacheRead"]),
+            cacheWrite: int64(usage["inputCacheCreation"]),
+            output: int64(usage["output"])
+        )
+        return KimiUsageEvent(
+            id: "current|\(milliseconds)|\(rawModel)|\(tokens.input)|\(tokens.output)|\(tokens.cachedInput)|\(tokens.cacheWrite)",
+            date: Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000),
+            provider: provider,
+            model: model,
+            tokens: tokens
+        )
+    }
+
+    guard let timestamp = object["timestamp"] as? NSNumber,
+          let message = object["message"] as? [String: Any],
+          message["type"] as? String == "StatusUpdate",
+          let payload = message["payload"] as? [String: Any],
+          let usage = payload["token_usage"] as? [String: Any] else { return nil }
+    let messageID = payload["message_id"] as? String
+    let tokens = TokenBreakdown(
+        input: int64(usage["input_other"]),
+        cachedInput: int64(usage["input_cache_read"]),
+        cacheWrite: int64(usage["input_cache_creation"]),
+        output: int64(usage["output"])
+    )
+    return KimiUsageEvent(
+        id: "legacy|\(messageID ?? "\(timestamp.doubleValue)|\(tokens.input)|\(tokens.output)|\(tokens.cachedInput)|\(tokens.cacheWrite)")",
+        date: Date(timeIntervalSince1970: timestamp.doubleValue),
+        provider: "kimi-code",
+        model: "kimi-for-coding",
+        tokens: tokens
+    )
 }
 
 enum SQLiteJSONQueryRunner {
