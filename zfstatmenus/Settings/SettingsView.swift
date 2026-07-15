@@ -358,6 +358,7 @@ private struct StatusItemToggle: View {
 }
 
 struct TokenSettingsView: View {
+    @ObservedObject private var tokenUsageMonitor = TokenUsageMonitor.shared
     @AppStorage("tokenRefreshInterval") private var tokenRefreshInterval = 60.0
     @AppStorage("tokenDisplayCurrency") private var currency = "both"
     @AppStorage("tokenUSDToCNYRate") private var usdToCNYRate = 7.2
@@ -366,6 +367,9 @@ struct TokenSettingsView: View {
     @State private var codexEnabled = true
     @State private var claudeEnabled = true
     @State private var kimiEnabled = true
+    @State private var showRecalculateConfirmation = false
+    @State private var recalculationFeedback: String?
+    @State private var recalculationHasError = false
 
     var body: some View {
         SettingsPage(
@@ -413,6 +417,34 @@ struct TokenSettingsView: View {
                 }
             }
 
+            SettingsGroup(
+                title: "数据维护",
+                subtitle: "清除解析缓存并重新扫描近一年本地记录；启用同步时会用新 revision 覆盖本设备的远程快照。"
+            ) {
+                SettingsRow(title: "重新计算 Token 用量", detail: "用于修复解析规则更新或本地缓存异常") {
+                    HStack(spacing: 8) {
+                        if tokenUsageMonitor.isRecalculating {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button(tokenUsageMonitor.isRecalculating ? "正在重算" : "重新计算") {
+                            showRecalculateConfirmation = true
+                        }
+                        .disabled(tokenUsageMonitor.isRecalculating)
+                    }
+                }
+            }
+
+            if let recalculationFeedback {
+                Label(
+                    recalculationFeedback,
+                    systemImage: recalculationHasError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(recalculationHasError ? AppTheme.danger : AppTheme.success)
+                .padding(.horizontal, 2)
+            }
+
             Label("费用是标准 API 等价估算，不代表订阅服务的实际扣费。", systemImage: "info.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -424,6 +456,12 @@ struct TokenSettingsView: View {
         .onChange(of: codexEnabled) { _ in saveSources() }
         .onChange(of: claudeEnabled) { _ in saveSources() }
         .onChange(of: kimiEnabled) { _ in saveSources() }
+        .alert("重新计算 Token 用量？", isPresented: $showRecalculateConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("重新计算") { recalculateTokenUsage() }
+        } message: {
+            Text("将清除统计解析缓存并重新扫描近一年记录。远程同步已启用时，重算结果会自动覆盖本设备原有快照。")
+        }
     }
 
     private func loadSources() {
@@ -443,6 +481,21 @@ struct TokenSettingsView: View {
         if claudeEnabled { sources.insert(.claude) }
         if kimiEnabled { sources.insert(.kimi) }
         AppPreferences.shared.enabledTokenSources = sources
+    }
+
+    private func recalculateTokenUsage() {
+        recalculationFeedback = nil
+        tokenUsageMonitor.recalculate { errors in
+            if errors.isEmpty {
+                recalculationHasError = false
+                recalculationFeedback = AppPreferences.shared.tokenSyncEnabled
+                    ? "本地重算完成，正在同步纠正远程快照。"
+                    : "本地重算完成。"
+            } else {
+                recalculationHasError = true
+                recalculationFeedback = "重算未应用，部分来源读取失败：\(errors.joined(separator: "；"))"
+            }
+        }
     }
 }
 

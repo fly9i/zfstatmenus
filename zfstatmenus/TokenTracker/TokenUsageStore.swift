@@ -114,11 +114,14 @@ struct CodexFileCache: Codable {
     let byteOffset: UInt64
     let modifiedAt: TimeInterval
     let lastModel: String
+    let sessionID: String?
+    let lastTurnID: String?
+    let lastEventKey: String?
     let daily: [String: [String: ModelTokenUsage]]
 }
 
 private final class TokenUsageSQLiteStorage {
-    private static let schemaVersion = 2
+    private static let schemaVersion = 3
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     private var database: OpaquePointer?
@@ -173,7 +176,7 @@ private final class TokenUsageSQLiteStorage {
         }
 
         let fileStatement = try prepare(
-            "SELECT path, byte_offset, modified_at, last_model FROM codex_file"
+            "SELECT path, byte_offset, modified_at, last_model, session_id, last_turn_id, last_event_key FROM codex_file"
         )
         defer { sqlite3_finalize(fileStatement) }
         while sqlite3_step(fileStatement) == SQLITE_ROW {
@@ -182,6 +185,9 @@ private final class TokenUsageSQLiteStorage {
                 byteOffset: UInt64(max(0, sqlite3_column_int64(fileStatement, 1))),
                 modifiedAt: sqlite3_column_double(fileStatement, 2),
                 lastModel: text(fileStatement, 3),
+                sessionID: optionalText(fileStatement, 4),
+                lastTurnID: optionalText(fileStatement, 5),
+                lastEventKey: optionalText(fileStatement, 6),
                 daily: [:]
             )
         }
@@ -202,6 +208,9 @@ private final class TokenUsageSQLiteStorage {
                 byteOffset: cached.byteOffset,
                 modifiedAt: cached.modifiedAt,
                 lastModel: cached.lastModel,
+                sessionID: cached.sessionID,
+                lastTurnID: cached.lastTurnID,
+                lastEventKey: cached.lastEventKey,
                 daily: daily
             )
         }
@@ -230,7 +239,11 @@ private final class TokenUsageSQLiteStorage {
             }
 
             let fileStatement = try prepare(
-                "INSERT INTO codex_file(path, byte_offset, modified_at, last_model) VALUES (?, ?, ?, ?)"
+                """
+                INSERT INTO codex_file(
+                    path, byte_offset, modified_at, last_model, session_id, last_turn_id, last_event_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """
             )
             defer { sqlite3_finalize(fileStatement) }
             let fileUsageStatement = try prepare(
@@ -250,6 +263,9 @@ private final class TokenUsageSQLiteStorage {
                 sqlite3_bind_int64(fileStatement, 2, Int64(clamping: cached.byteOffset))
                 sqlite3_bind_double(fileStatement, 3, cached.modifiedAt)
                 bind(cached.lastModel, to: 4, in: fileStatement)
+                bindOptional(cached.sessionID, to: 5, in: fileStatement)
+                bindOptional(cached.lastTurnID, to: 6, in: fileStatement)
+                bindOptional(cached.lastEventKey, to: 7, in: fileStatement)
                 try stepDone(fileStatement)
 
                 for (day, usages) in cached.daily {
@@ -369,6 +385,22 @@ private final class TokenUsageSQLiteStorage {
                 throw error
             }
         }
+        if version < 3 {
+            try execute("BEGIN IMMEDIATE TRANSACTION")
+            do {
+                try execute("ALTER TABLE codex_file ADD COLUMN session_id TEXT")
+                try execute("ALTER TABLE codex_file ADD COLUMN last_turn_id TEXT")
+                try execute("ALTER TABLE codex_file ADD COLUMN last_event_key TEXT")
+                // 旧缓存缺少事件身份，无法可靠移除分叉复制的父会话历史，升级时强制重建 Codex 数据。
+                try execute("DELETE FROM daily_usage WHERE source = 'codex'")
+                try execute("DELETE FROM codex_file")
+                try execute("PRAGMA user_version = 3")
+                try execute("COMMIT")
+            } catch {
+                try? execute("ROLLBACK")
+                throw error
+            }
+        }
     }
 
     private func queryUsages(
@@ -438,9 +470,22 @@ private final class TokenUsageSQLiteStorage {
         sqlite3_bind_text(statement, index, value, -1, Self.transient)
     }
 
+    private func bindOptional(_ value: String?, to index: Int32, in statement: OpaquePointer) {
+        if let value {
+            bind(value, to: index, in: statement)
+        } else {
+            sqlite3_bind_null(statement, index)
+        }
+    }
+
     private func text(_ statement: OpaquePointer, _ column: Int32) -> String {
         guard let value = sqlite3_column_text(statement, column) else { return "" }
         return String(cString: value)
+    }
+
+    private func optionalText(_ statement: OpaquePointer, _ column: Int32) -> String? {
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
+        return text(statement, column)
     }
 
     private func scalarInt(_ sql: String) -> Int64 {

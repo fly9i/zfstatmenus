@@ -376,6 +376,9 @@ final class TokenUsageTests: XCTestCase {
                     byteOffset: 123,
                     modifiedAt: 456,
                     lastModel: usage.model,
+                    sessionID: "019f49f9-43c1-7740-a485-f89f66b7c4b4",
+                    lastTurnID: "019f4a04-169c-7333-888f-f207a4454196",
+                    lastEventKey: "event-key",
                     daily: ["2026-07-14": [usage.id: usage]]
                 )
             ]
@@ -387,6 +390,9 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertEqual(loaded.daily, store.daily)
         XCTAssertEqual(loaded.codexFiles["/tmp/session.jsonl"]?.byteOffset, 123)
         XCTAssertEqual(loaded.codexFiles["/tmp/session.jsonl"]?.lastModel, usage.model)
+        XCTAssertEqual(loaded.codexFiles["/tmp/session.jsonl"]?.sessionID, store.codexFiles["/tmp/session.jsonl"]?.sessionID)
+        XCTAssertEqual(loaded.codexFiles["/tmp/session.jsonl"]?.lastTurnID, store.codexFiles["/tmp/session.jsonl"]?.lastTurnID)
+        XCTAssertEqual(loaded.codexFiles["/tmp/session.jsonl"]?.lastEventKey, "event-key")
         XCTAssertEqual(loaded.codexFiles["/tmp/session.jsonl"]?.daily, store.codexFiles["/tmp/session.jsonl"]?.daily)
     }
 
@@ -414,7 +420,7 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertEqual(loadedAgain.daily, legacyStore.daily)
     }
 
-    func testSQLiteCacheCreatesSyncSchemaVersionTwo() throws {
+    func testSQLiteCacheCreatesSchemaVersionThree() throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -425,7 +431,7 @@ final class TokenUsageTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
         defer { sqlite3_close(database) }
-        XCTAssertEqual(sqliteScalarInt(database, sql: "PRAGMA user_version"), 2)
+        XCTAssertEqual(sqliteScalarInt(database, sql: "PRAGMA user_version"), 3)
         XCTAssertEqual(
             sqliteScalarInt(
                 database,
@@ -433,6 +439,28 @@ final class TokenUsageTests: XCTestCase {
             ),
             3
         )
+    }
+
+    func testCodexEventTrackerSkipsForkedParentTurnsAndKeepsChildUsage() {
+        var tracker = CodexEventTracker()
+        tracker.observeSession("019f4a04-d27c-72e1-849f-d92d3735365a")
+
+        tracker.observeTurn("019f49fa-a554-7601-b406-bd3414be1421")
+        XCTAssertFalse(tracker.shouldCount(totalUsage: codexTotalUsage(total: 100)))
+
+        tracker.observeTurn("019f4a04-d3b3-7a72-bd84-700cdd69607b")
+        XCTAssertTrue(tracker.shouldCount(totalUsage: codexTotalUsage(total: 200)))
+    }
+
+    func testCodexEventTrackerDeduplicatesRepeatedCumulativeUsage() {
+        var tracker = CodexEventTracker()
+        tracker.observeSession("019f4a04-d27c-72e1-849f-d92d3735365a")
+        tracker.observeTurn("019f4a04-d3b3-7a72-bd84-700cdd69607b")
+        let usage = codexTotalUsage(total: 200)
+
+        XCTAssertTrue(tracker.shouldCount(totalUsage: usage))
+        XCTAssertFalse(tracker.shouldCount(totalUsage: usage))
+        XCTAssertTrue(tracker.shouldCount(totalUsage: codexTotalUsage(total: 250)))
     }
 
     func testSQLiteJSONQueryRunnerDoesNotLeakFileDescriptors() throws {
@@ -504,6 +532,16 @@ final class TokenUsageTests: XCTestCase {
 
 private struct SQLiteProbeRow: Decodable, Equatable {
     let value: Int
+}
+
+private func codexTotalUsage(total: Int64) -> [String: Any] {
+    [
+        "input_tokens": total - 10,
+        "cached_input_tokens": max(0, total - 20),
+        "output_tokens": 10,
+        "reasoning_output_tokens": 2,
+        "total_tokens": total,
+    ]
 }
 
 private func openFileDescriptorCount() -> Int {

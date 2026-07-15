@@ -2,9 +2,12 @@ import Combine
 import Foundation
 
 final class TokenUsageMonitor: ObservableObject {
+    static let shared = TokenUsageMonitor()
+
     @Published private(set) var snapshot: TokenUsageSnapshot = .empty
     @Published private(set) var deviceUsages: [DeviceTokenUsageSummary] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isRecalculating = false
 
     private let queue = DispatchQueue(label: "com.zfstat.token-usage", qos: .utility)
     private var timer: DispatchSourceTimer?
@@ -37,6 +40,56 @@ final class TokenUsageMonitor: ObservableObject {
 
     func refresh() {
         refresh(includeHistory: false, forceSync: true)
+    }
+
+    func recalculate(completion: (([String]) -> Void)? = nil) {
+        DispatchQueue.main.async { [weak self] in
+            self?.isLoading = true
+            self?.isRecalculating = true
+        }
+        queue.async { [weak self] in
+            guard let self else { return }
+            let previousDaily = self.store.daily
+            let collector = TokenUsageCollector(store: TokenUsageStore())
+            let result = collector.collect(days: 365, sources: AppPreferences.shared.enabledTokenSources)
+            guard result.errors.isEmpty else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.isLoading = false
+                    self?.isRecalculating = false
+                    completion?(result.errors)
+                }
+                return
+            }
+            self.store = result.store
+            self.store.save()
+            self.lastCollectionErrors = []
+
+            // 每日数据是完整快照。重算后连同被删除的日期一起生成更高 revision，覆盖远程旧值。
+            let recalculatedDays = Set(previousDaily.keys).union(self.store.daily.keys)
+            self.syncService.markDirty(days: recalculatedDays)
+
+            let newSnapshot = self.combinedSnapshot(remoteDaily: self.syncService.cachedRemoteDaily())
+            let newDeviceUsages = self.combinedDeviceUsages()
+            DispatchQueue.main.async { [weak self] in
+                self?.snapshot = newSnapshot
+                self?.deviceUsages = newDeviceUsages
+                self?.isLoading = false
+                self?.isRecalculating = false
+                completion?(result.errors)
+            }
+
+            self.syncService.requestSync(localStore: self.store, force: true) { [weak self] remoteDaily in
+                guard let self else { return }
+                self.queue.async {
+                    let syncedSnapshot = self.combinedSnapshot(remoteDaily: remoteDaily)
+                    let syncedDeviceUsages = self.combinedDeviceUsages()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.snapshot = syncedSnapshot
+                        self?.deviceUsages = syncedDeviceUsages
+                    }
+                }
+            }
+        }
     }
 
     private func refresh(includeHistory: Bool, forceSync: Bool = false) {
@@ -374,14 +427,37 @@ private struct TokenUsageCollector {
                 let offset = canAppend ? (cached?.byteOffset ?? 0) : 0
                 var fileDaily = canAppend ? (cached?.daily ?? [:]) : [:]
                 var currentModel = canAppend ? (cached?.lastModel ?? "未知模型") : "未知模型"
+                var eventTracker = CodexEventTracker(
+                    sessionID: canAppend ? cached?.sessionID : nil,
+                    turnID: canAppend ? cached?.lastTurnID : nil,
+                    lastEventKey: canAppend ? cached?.lastEventKey : nil
+                )
 
                 try JSONLReader.read(fileURL, from: offset) { data in
                     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+                    if object["type"] as? String == "session_meta",
+                       let payload = object["payload"] as? [String: Any],
+                       let sessionID = payload["id"] as? String {
+                        eventTracker.observeSession(sessionID)
+                        return
+                    }
 
                     if object["type"] as? String == "turn_context",
                        let payload = object["payload"] as? [String: Any],
                        let model = payload["model"] as? String {
                         currentModel = model
+                        if let turnID = payload["turn_id"] as? String {
+                            eventTracker.observeTurn(turnID)
+                        }
+                        return
+                    }
+
+                    if object["type"] as? String == "event_msg",
+                       let payload = object["payload"] as? [String: Any],
+                       payload["type"] as? String == "task_started",
+                       let turnID = payload["turn_id"] as? String {
+                        eventTracker.observeTurn(turnID)
                         return
                     }
 
@@ -390,6 +466,7 @@ private struct TokenUsageCollector {
                           payload["type"] as? String == "token_count",
                           let info = payload["info"] as? [String: Any],
                           let usage = info["last_token_usage"] as? [String: Any],
+                          eventTracker.shouldCount(totalUsage: info["total_token_usage"] as? [String: Any]),
                           let timestamp = object["timestamp"] as? String,
                           let date = parseISO8601(timestamp) else { return }
 
@@ -412,6 +489,9 @@ private struct TokenUsageCollector {
                     byteOffset: size,
                     modifiedAt: modifiedAt,
                     lastModel: currentModel,
+                    sessionID: eventTracker.sessionID,
+                    lastTurnID: eventTracker.turnID,
+                    lastEventKey: eventTracker.lastEventKey,
                     daily: fileDaily
                 )
                 updatedCache[path] = entry
@@ -580,6 +660,44 @@ private enum TokenUsageError: LocalizedError {
 }
 
 // MARK: - JSONL helpers
+
+struct CodexEventTracker {
+    private(set) var sessionID: String?
+    private(set) var turnID: String?
+    private(set) var lastEventKey: String?
+
+    mutating func observeSession(_ id: String) {
+        // 分叉日志随后会重放父会话的 session_meta，文件首个 session 才是当前文件的身份。
+        if sessionID == nil {
+            sessionID = id.lowercased()
+        }
+    }
+
+    mutating func observeTurn(_ id: String) {
+        turnID = id.lowercased()
+    }
+
+    mutating func shouldCount(totalUsage: [String: Any]?) -> Bool {
+        // Codex 的 session/turn 均为按时间有序的 UUIDv7。早于当前 session 的 turn
+        // 来自 fork/subagent 写入文件开头的父会话重放，不能再次计费。
+        if let sessionID, let turnID, turnID < sessionID {
+            return false
+        }
+
+        guard let totalUsage, let turnID else { return true }
+        let eventKey = [
+            turnID,
+            String(int64(totalUsage["input_tokens"])),
+            String(int64(totalUsage["cached_input_tokens"])),
+            String(int64(totalUsage["output_tokens"])),
+            String(int64(totalUsage["reasoning_output_tokens"])),
+            String(int64(totalUsage["total_tokens"])),
+        ].joined(separator: "|")
+        guard eventKey != lastEventKey else { return false }
+        lastEventKey = eventKey
+        return true
+    }
+}
 
 private enum JSONLReader {
     static func read(_ url: URL, from offset: UInt64 = 0, handler: (Data) -> Void) throws {

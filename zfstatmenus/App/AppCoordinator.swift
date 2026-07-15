@@ -4,7 +4,7 @@ import Combine
 final class AppCoordinator {
 
     private let monitorManager = MonitorManager()
-    private let tokenUsageMonitor = TokenUsageMonitor()
+    private let tokenUsageMonitor = TokenUsageMonitor.shared
     private lazy var statusBarController = StatusBarController(
         monitorManager: monitorManager,
         tokenUsageMonitor: tokenUsageMonitor
