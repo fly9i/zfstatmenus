@@ -222,7 +222,7 @@ private struct ModelPricing {
 }
 
 private enum ModelPricingCatalog {
-    // 标准公开 API 单价，最后核对日期：2026-07-13。官方来源见 README。
+    // 标准公开 API 单价，最后核对日期：2026-07-16。官方来源见 README。
     static func pricing(provider rawProvider: String, model rawModel: String) -> ModelPricing? {
         let provider = rawProvider.lowercased()
         let model = rawModel.lowercased()
@@ -283,6 +283,11 @@ private enum ModelPricingCatalog {
             return cny(input: 12, cached: 12, write: 12, output: 36)
         }
 
+        if model == "kimi-k3" || (model == "k3" && provider == "kimi-code") {
+            // 官方仅区分缓存命中与未命中；缓存创建按未命中输入计价。
+            return cny(input: 20, cached: 2, write: 20, output: 100)
+        }
+
         if provider == "llama-cpp" || provider == "llama.cpp" {
             return usd(input: 0, cached: 0, write: 0, output: 0)
         }
@@ -317,25 +322,25 @@ func formatTokenCost(_ estimate: TokenCostEstimate, currency: String, usdToCNY: 
     let usd = formatTokenCostUSD(estimate, usdToCNY: usdToCNY)
     let cny = formatTokenCostCNY(estimate, usdToCNY: usdToCNY)
     switch currency {
-    case "usd": return usd
-    case "cny": return cny
-    default: return "\(usd) · \(cny)"
+    case "usd": return "USD \(usd)"
+    case "cny": return "CNY \(cny)"
+    default: return "USD \(usd) · CNY \(cny)"
     }
 }
 
 func formatTokenCostUSD(_ estimate: TokenCostEstimate, usdToCNY: Double) -> String {
-    formatMoney(estimate.totalUSD(usdToCNY: usdToCNY), symbol: "$")
+    formatMoney(estimate.totalUSD(usdToCNY: usdToCNY))
 }
 
 func formatTokenCostCNY(_ estimate: TokenCostEstimate, usdToCNY: Double) -> String {
-    formatMoney(estimate.totalCNY(usdToCNY: usdToCNY), symbol: "¥")
+    formatMoney(estimate.totalCNY(usdToCNY: usdToCNY))
 }
 
-private func formatMoney(_ value: Double, symbol: String) -> String {
+private func formatMoney(_ value: Double) -> String {
     if value > 0, value < 0.01 {
-        return String(format: "%@%.4f", symbol, value)
+        return String(format: "%.4f", value)
     }
-    return String(format: "%@%.2f", symbol, value)
+    return String(format: "%.2f", value)
 }
 
 func tokenHeatLevel(_ value: Int64) -> Int {

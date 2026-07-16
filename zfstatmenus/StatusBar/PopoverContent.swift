@@ -931,17 +931,18 @@ private struct TokenCostColumns: View {
     let estimate: TokenCostEstimate
     let currency: String
     let usdToCNYRate: Double
+    let showsCurrencySymbols: Bool
 
     var body: some View {
         Group {
             if estimate.pricedTokens > 0 {
                 HStack(spacing: currency == "both" ? TokenListLayout.currencySpacing : 0) {
                     if currency != "cny" {
-                        Text(formatTokenCostUSD(estimate, usdToCNY: usdToCNYRate))
+                        Text(costText(formatTokenCostUSD(estimate, usdToCNY: usdToCNYRate), symbol: "$"))
                             .frame(width: TokenListLayout.usdWidth, alignment: .trailing)
                     }
                     if currency != "usd" {
-                        Text(formatTokenCostCNY(estimate, usdToCNY: usdToCNYRate))
+                        Text(costText(formatTokenCostCNY(estimate, usdToCNY: usdToCNYRate), symbol: "¥"))
                             .frame(width: TokenListLayout.cnyWidth, alignment: .trailing)
                     }
                 }
@@ -950,8 +951,13 @@ private struct TokenCostColumns: View {
                     .frame(width: TokenListLayout.costWidth(for: currency), alignment: .trailing)
             }
         }
-        .font(.system(.body, design: .monospaced))
+        .font(.system(size: 12, weight: .medium))
+        .monospacedDigit()
         .frame(width: TokenListLayout.costWidth(for: currency), alignment: .trailing)
+    }
+
+    private func costText(_ amount: String, symbol: String) -> String {
+        showsCurrencySymbols ? "\(symbol)\(amount)" : amount
     }
 }
 
@@ -983,7 +989,8 @@ private struct SourceTokenCostRow: View {
             TokenCostColumns(
                 estimate: estimate,
                 currency: currency,
-                usdToCNYRate: usdToCNYRate
+                usdToCNYRate: usdToCNYRate,
+                showsCurrencySymbols: false
             )
         }
         .padding(.horizontal, 12)
@@ -1026,7 +1033,8 @@ private struct TokenSummaryCard: View {
                 .tracking(-0.35)
                 .monospacedDigit()
             Text(cost)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
             if showsDevices && !sortedDevices.isEmpty {
                 Divider()
@@ -1089,7 +1097,8 @@ private struct ModelTokenCostRow: View {
             TokenCostColumns(
                 estimate: estimate,
                 currency: currency,
-                usdToCNYRate: usdToCNYRate
+                usdToCNYRate: usdToCNYRate,
+                showsCurrencySymbols: false
             )
         }
         .padding(.horizontal, 12)
@@ -1271,7 +1280,8 @@ private struct HeatmapHoverDetail: View {
                 TokenCostColumns(
                     estimate: totalEstimate,
                     currency: currency,
-                    usdToCNYRate: usdToCNYRate
+                    usdToCNYRate: usdToCNYRate,
+                    showsCurrencySymbols: true
                 )
             }
             .padding(.horizontal, 10)
@@ -1339,7 +1349,8 @@ private struct HeatmapModelCostRow: View {
             TokenCostColumns(
                 estimate: estimateAPICost(for: [usage]),
                 currency: currency,
-                usdToCNYRate: usdToCNYRate
+                usdToCNYRate: usdToCNYRate,
+                showsCurrencySymbols: true
             )
         }
         .font(.caption)

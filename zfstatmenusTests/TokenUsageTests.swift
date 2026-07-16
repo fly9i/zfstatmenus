@@ -194,7 +194,9 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertEqual(estimate.totalUSD(usdToCNY: 7.2), 5, accuracy: 0.0001)
         XCTAssertEqual(estimate.unpricedTokens, 500_000)
         XCTAssertEqual(estimate.unpricedModels, ["codex-auto-review"])
-        XCTAssertEqual(formatTokenCost(estimate, currency: "cny", usdToCNY: 7.2), "¥36.00")
+        XCTAssertEqual(formatTokenCost(estimate, currency: "cny", usdToCNY: 7.2), "CNY 36.00")
+        XCTAssertEqual(formatTokenCost(estimate, currency: "usd", usdToCNY: 7.2), "USD 5.00")
+        XCTAssertEqual(formatTokenCost(estimate, currency: "both", usdToCNY: 7.2), "USD 5.00 · CNY 36.00")
     }
 
     func testKnownModelUsesFirstPartyPricingAcrossProviders() {
@@ -229,6 +231,26 @@ final class TokenUsageTests: XCTestCase {
 
         XCTAssertEqual(estimate.nativeUSD, 5, accuracy: 0.0001)
         XCTAssertEqual(estimate.pricedTokens, 1_000_000)
+    }
+
+    func testKimiK3UsesOfficialCNYPricing() {
+        let usage = ModelTokenUsage(
+            source: .kimi,
+            provider: "kimi-code",
+            model: "k3",
+            tokens: TokenBreakdown(
+                input: 1_000_000,
+                cachedInput: 1_000_000,
+                cacheWrite: 1_000_000,
+                output: 1_000_000
+            )
+        )
+
+        let estimate = estimateAPICost(for: [usage])
+
+        XCTAssertEqual(estimate.nativeCNY, 142, accuracy: 0.0001)
+        XCTAssertEqual(estimate.pricedTokens, 4_000_000)
+        XCTAssertEqual(estimate.unpricedTokens, 0)
     }
 
     func testInternalProductModelDoesNotInheritPublicModelPrice() {
