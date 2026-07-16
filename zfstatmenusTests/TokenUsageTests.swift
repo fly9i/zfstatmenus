@@ -317,6 +317,65 @@ final class TokenUsageTests: XCTestCase {
         )
     }
 
+    func testDisplayMergesSameModelAcrossAllChannelsIgnoringCase() throws {
+        let usages = [
+            ModelTokenUsage(
+                source: .opencode,
+                provider: "zhipuai-coding-plan",
+                model: "glm-5.2",
+                tokens: TokenBreakdown(input: 1_000_000)
+            ),
+            ModelTokenUsage(
+                source: .opencode,
+                provider: "opencode-go",
+                model: "glm-5.2",
+                tokens: TokenBreakdown(cachedInput: 2_000_000)
+            ),
+            ModelTokenUsage(
+                source: .zcode,
+                provider: "zhipuai-coding-plan",
+                model: "GLM-5.2",
+                tokens: TokenBreakdown(output: 3_000_000)
+            ),
+        ]
+
+        let summary = try XCTUnwrap(
+            sortedModelUsagesForDisplay(usages, usdToCNYRate: 7.2).first
+        )
+
+        XCTAssertEqual(summary.model, "glm-5.2")
+        XCTAssertEqual(summary.usages.count, 3)
+        XCTAssertEqual(summary.channelCount, 3)
+        XCTAssertEqual(summary.channelSummary, "OpenCode、ZCode · 3 个渠道")
+        XCTAssertEqual(
+            summary.tokens,
+            TokenBreakdown(input: 1_000_000, cachedInput: 2_000_000, output: 3_000_000)
+        )
+        XCTAssertEqual(summary.estimate.nativeCNY, 96, accuracy: 0.0001)
+    }
+
+    func testDisplayAppliesMinimumTokenThresholdAfterModelAggregation() {
+        let usages = [
+            ModelTokenUsage(
+                source: .opencode,
+                provider: "provider-a",
+                model: "shared-model",
+                tokens: TokenBreakdown(input: 600)
+            ),
+            ModelTokenUsage(
+                source: .zcode,
+                provider: "provider-b",
+                model: "SHARED-MODEL",
+                tokens: TokenBreakdown(input: 600)
+            ),
+        ]
+
+        let summaries = sortedModelUsagesForDisplay(usages, usdToCNYRate: 7.2)
+
+        XCTAssertEqual(summaries.map(\.model), ["shared-model"])
+        XCTAssertEqual(summaries[0].tokens.totalTokens, 1_200)
+    }
+
     func testDisplaySortsSourcesByPricedCostThenTokens() {
         let day = DailyTokenUsage(
             date: Date(),

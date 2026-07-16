@@ -549,7 +549,7 @@ struct TokenDetailView: View {
                         .background(AppTheme.subtleFill.opacity(0.55), in: RoundedRectangle(cornerRadius: AppTheme.innerRadius))
                     }
 
-                    let estimate = estimateAPICost(for: displayedModelsLast30Days)
+                    let estimate = estimateAPICost(for: displayedModelsLast30Days.flatMap(\.usages))
                     if !estimate.unpricedModels.isEmpty {
                         Label(
                             "未定价模型：\(estimate.unpricedModels.sorted().joined(separator: "、"))",
@@ -599,14 +599,14 @@ struct TokenDetailView: View {
         )
     }
 
-    private var displayedModelsLast30Days: [ModelTokenUsage] {
+    private var displayedModelsLast30Days: [ModelUsageDisplaySummary] {
         sortedModelUsagesForDisplay(
             monitor.snapshot.modelUsages(last: 30),
             usdToCNYRate: usdToCNYRate
         )
     }
 
-    private var recentModels: [ModelTokenUsage] {
+    private var recentModels: [ModelUsageDisplaySummary] {
         Array(displayedModelsLast30Days.prefix(20))
     }
 
@@ -835,13 +835,68 @@ private enum TokenListLayout {
 
 let minimumDisplayedTokenCount: Int64 = 1_000
 
+struct ModelUsageDisplaySummary: Identifiable {
+    let model: String
+    let usages: [ModelTokenUsage]
+
+    var id: String { normalizedModelName(model) }
+    var displayName: String { model.isEmpty ? "未知模型" : model }
+    var tokens: TokenBreakdown { usages.reduce(into: TokenBreakdown()) { $0 += $1.tokens } }
+    var estimate: TokenCostEstimate { estimateAPICost(for: usages) }
+
+    var channelCount: Int {
+        Set(usages.map { "\($0.source.rawValue)|\($0.provider.lowercased())" }).count
+    }
+
+    var channelSummary: String {
+        if channelCount == 1, let usage = usages.first {
+            return "\(usage.source.displayName) · \(usage.provider)"
+        }
+        let sources = Set(usages.map(\.source))
+        let sourceNames = TokenSource.allCases
+            .filter { sources.contains($0) }
+            .map(\.displayName)
+            .joined(separator: "、")
+        return "\(sourceNames) · \(channelCount) 个渠道"
+    }
+
+    var channelDetails: String {
+        var labelsByKey: [String: String] = [:]
+        for usage in usages {
+            let key = "\(usage.source.rawValue)|\(usage.provider.lowercased())"
+            labelsByKey[key] = "\(usage.source.displayName) · \(usage.provider)"
+        }
+        return labelsByKey.sorted { $0.key < $1.key }.map(\.value).joined(separator: "、")
+    }
+}
+
+private func normalizedModelName(_ model: String) -> String {
+    model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
+private func preferredModelName(in usages: [ModelTokenUsage]) -> String {
+    let names = Set(usages.map { $0.model.trimmingCharacters(in: .whitespacesAndNewlines) })
+    return names.sorted { lhs, rhs in
+        let lhsIsLowercase = lhs == lhs.lowercased()
+        let rhsIsLowercase = rhs == rhs.lowercased()
+        if lhsIsLowercase != rhsIsLowercase {
+            return lhsIsLowercase
+        }
+        return lhs.localizedStandardCompare(rhs) == .orderedAscending
+    }.first ?? ""
+}
+
 func sortedModelUsagesForDisplay(
     _ usages: [ModelTokenUsage],
     usdToCNYRate: Double
-) -> [ModelTokenUsage] {
-    usages.filter { $0.tokens.totalTokens >= minimumDisplayedTokenCount }.sorted { lhs, rhs in
-        let lhsEstimate = estimateAPICost(for: [lhs])
-        let rhsEstimate = estimateAPICost(for: [rhs])
+) -> [ModelUsageDisplaySummary] {
+    let grouped = Dictionary(grouping: usages) { normalizedModelName($0.model) }
+        .values
+        .map { ModelUsageDisplaySummary(model: preferredModelName(in: $0), usages: $0) }
+
+    return grouped.filter { $0.tokens.totalTokens >= minimumDisplayedTokenCount }.sorted { lhs, rhs in
+        let lhsEstimate = lhs.estimate
+        let rhsEstimate = rhs.estimate
         let lhsIsPriced = lhsEstimate.pricedTokens > 0
         let rhsIsPriced = rhsEstimate.pricedTokens > 0
 
@@ -1066,13 +1121,13 @@ private struct TokenSummaryCard: View {
 }
 
 private struct ModelTokenCostRow: View {
-    let usage: ModelTokenUsage
+    let usage: ModelUsageDisplaySummary
     let currency: String
     let usdToCNYRate: Double
     @State private var isHovered = false
 
     private var estimate: TokenCostEstimate {
-        estimateAPICost(for: [usage])
+        usage.estimate
     }
 
     var body: some View {
@@ -1082,7 +1137,7 @@ private struct ModelTokenCostRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .fontWeight(.medium)
-                Text("\(usage.source.displayName) · \(usage.provider)")
+                Text(usage.channelSummary)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -1106,7 +1161,7 @@ private struct ModelTokenCostRow: View {
         .background(isHovered ? AppTheme.accentSoft.opacity(0.55) : Color.clear)
         .animation(.easeOut(duration: 0.14), value: isHovered)
         .onHover { isHovered = $0 }
-        .help("输入 \(formatTokenCount(usage.tokens.input)) · 缓存读取 \(formatTokenCount(usage.tokens.cachedInput)) · 缓存写入 \(formatTokenCount(usage.tokens.cacheWrite)) · 输出/推理 \(formatTokenCount(usage.tokens.output + usage.tokens.reasoning))")
+        .help("\(usage.channelDetails)\n输入 \(formatTokenCount(usage.tokens.input)) · 缓存读取 \(formatTokenCount(usage.tokens.cachedInput)) · 缓存写入 \(formatTokenCount(usage.tokens.cacheWrite)) · 输出/推理 \(formatTokenCount(usage.tokens.output + usage.tokens.reasoning))")
     }
 }
 
@@ -1249,7 +1304,7 @@ private struct HeatmapHoverDetail: View {
     let currency: String
     let usdToCNYRate: Double
 
-    private var modelUsages: [ModelTokenUsage] {
+    private var modelUsages: [ModelUsageDisplaySummary] {
         sortedModelUsagesForDisplay(
             day.modelUsages,
             usdToCNYRate: usdToCNYRate
@@ -1321,7 +1376,7 @@ private struct HeatmapHoverDetail: View {
 }
 
 private struct HeatmapModelCostRow: View {
-    let usage: ModelTokenUsage
+    let usage: ModelUsageDisplaySummary
     let currency: String
     let usdToCNYRate: Double
 
@@ -1334,7 +1389,7 @@ private struct HeatmapModelCostRow: View {
                 Text(usage.displayName)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(usage.source.displayName)
+                Text(usage.channelCount == 1 ? (usage.usages.first?.source.displayName ?? "") : "\(usage.channelCount) 个渠道")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -1347,7 +1402,7 @@ private struct HeatmapModelCostRow: View {
                 .frame(width: TokenListLayout.tokenWidth, alignment: .trailing)
 
             TokenCostColumns(
-                estimate: estimateAPICost(for: [usage]),
+                estimate: usage.estimate,
                 currency: currency,
                 usdToCNYRate: usdToCNYRate,
                 showsCurrencySymbols: true
@@ -1356,7 +1411,7 @@ private struct HeatmapModelCostRow: View {
         .font(.caption)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .help("\(usage.source.displayName) · \(usage.provider)")
+        .help(usage.channelDetails)
     }
 
     private var sourceColor: Color {
