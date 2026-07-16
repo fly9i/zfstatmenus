@@ -463,6 +463,30 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertTrue(tracker.shouldCount(totalUsage: codexTotalUsage(total: 250)))
     }
 
+    func testCodexLogFileDiscoveryIncludesActiveAndArchivedSessions() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let activeRoot = folder.appendingPathComponent("sessions", isDirectory: true)
+        let activeDay = activeRoot.appendingPathComponent("2026/07/16", isDirectory: true)
+        let archivedRoot = folder.appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDay, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archivedRoot, withIntermediateDirectories: true)
+
+        let activeFile = activeDay.appendingPathComponent("active.jsonl")
+        let archivedFile = archivedRoot.appendingPathComponent("archived.jsonl")
+        try Data().write(to: activeFile)
+        try Data().write(to: archivedFile)
+        try Data().write(to: archivedRoot.appendingPathComponent("ignored.txt"))
+
+        let files = codexLogFileURLs(activeRoot: activeRoot, archivedRoot: archivedRoot)
+
+        XCTAssertEqual(
+            Set(files.map { $0.resolvingSymlinksInPath().path }),
+            Set([activeFile, archivedFile].map { $0.resolvingSymlinksInPath().path })
+        )
+    }
+
     func testSQLiteJSONQueryRunnerDoesNotLeakFileDescriptors() throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

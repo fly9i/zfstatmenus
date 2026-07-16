@@ -388,117 +388,125 @@ private struct TokenUsageCollector {
         through endDate: Date,
         fileCache: [String: CodexFileCache]
     ) throws -> (daily: [String: [String: ModelTokenUsage]], fileCache: [String: CodexFileCache]) {
-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
-        guard FileManager.default.fileExists(atPath: root.path) else { return ([:], fileCache) }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let activeRoot = home.appendingPathComponent(".codex/sessions")
+        let archivedRoot = home.appendingPathComponent(".codex/archived_sessions")
+        let files = codexLogFileURLs(activeRoot: activeRoot, archivedRoot: archivedRoot)
+        guard !files.isEmpty else { return ([:], fileCache) }
 
         var updatedCache = fileCache
         var daily: [String: [String: ModelTokenUsage]] = [:]
-        let calendar = Calendar.current
-        let folderStart = calendar.date(byAdding: .day, value: -1, to: startDate) ?? startDate
-        let folderEnd = calendar.date(byAdding: .day, value: 1, to: endDate) ?? endDate
-        var folderDate = folderStart
+        let discoveredPaths = Set(files.map(\.path))
+        let managedRoots = [activeRoot, archivedRoot].map { $0.standardizedFileURL.path + "/" }
+        var stalePaths = Set(updatedCache.keys.filter { path in
+            managedRoots.contains { path.hasPrefix($0) } && !discoveredPaths.contains(path)
+        })
 
-        while folderDate <= folderEnd {
-            let components = calendar.dateComponents([.year, .month, .day], from: folderDate)
-            let folder = root
-                .appendingPathComponent(String(format: "%04d", components.year ?? 0))
-                .appendingPathComponent(String(format: "%02d", components.month ?? 0))
-                .appendingPathComponent(String(format: "%02d", components.day ?? 0))
+        for fileURL in files {
+            let path = fileURL.path
+            let values = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size = UInt64(values.fileSize ?? 0)
+            let modifiedAt = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+            var cached = updatedCache[path]
 
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: folder,
-                includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )) ?? []
-
-            for fileURL in files where fileURL.pathExtension == "jsonl" {
-                let path = fileURL.path
-                let values = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-                let size = UInt64(values.fileSize ?? 0)
-                let modifiedAt = values.contentModificationDate?.timeIntervalSince1970 ?? 0
-                let cached = updatedCache[path]
-
-                if let cached, cached.byteOffset == size, cached.modifiedAt == modifiedAt {
-                    merge(cached.daily, into: &daily, from: startDate, through: endDate)
-                    continue
-                }
-
-                let canAppend = cached != nil && size >= (cached?.byteOffset ?? 0)
-                let offset = canAppend ? (cached?.byteOffset ?? 0) : 0
-                var fileDaily = canAppend ? (cached?.daily ?? [:]) : [:]
-                var currentModel = canAppend ? (cached?.lastModel ?? "未知模型") : "未知模型"
-                var eventTracker = CodexEventTracker(
-                    sessionID: canAppend ? cached?.sessionID : nil,
-                    turnID: canAppend ? cached?.lastTurnID : nil,
-                    lastEventKey: canAppend ? cached?.lastEventKey : nil
-                )
-
-                try JSONLReader.read(fileURL, from: offset) { data in
-                    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-
-                    if object["type"] as? String == "session_meta",
-                       let payload = object["payload"] as? [String: Any],
-                       let sessionID = payload["id"] as? String {
-                        eventTracker.observeSession(sessionID)
-                        return
-                    }
-
-                    if object["type"] as? String == "turn_context",
-                       let payload = object["payload"] as? [String: Any],
-                       let model = payload["model"] as? String {
-                        currentModel = model
-                        if let turnID = payload["turn_id"] as? String {
-                            eventTracker.observeTurn(turnID)
-                        }
-                        return
-                    }
-
-                    if object["type"] as? String == "event_msg",
-                       let payload = object["payload"] as? [String: Any],
-                       payload["type"] as? String == "task_started",
-                       let turnID = payload["turn_id"] as? String {
-                        eventTracker.observeTurn(turnID)
-                        return
-                    }
-
-                    guard object["type"] as? String == "event_msg",
-                          let payload = object["payload"] as? [String: Any],
-                          payload["type"] as? String == "token_count",
-                          let info = payload["info"] as? [String: Any],
-                          let usage = info["last_token_usage"] as? [String: Any],
-                          eventTracker.shouldCount(totalUsage: info["total_token_usage"] as? [String: Any]),
-                          let timestamp = object["timestamp"] as? String,
-                          let date = parseISO8601(timestamp) else { return }
-
-                    // Codex 的 input_tokens 已含 cached_input_tokens；output_tokens 已含推理输出。
-                    let cachedInput = int64(usage["cached_input_tokens"])
-                    let modelUsage = ModelTokenUsage(
-                        source: .codex,
-                        provider: "openai",
-                        model: currentModel,
-                        tokens: TokenBreakdown(
-                            input: max(0, int64(usage["input_tokens"]) - cachedInput),
-                            cachedInput: cachedInput,
-                            output: int64(usage["output_tokens"])
-                        )
-                    )
-                    mergeUsage(modelUsage, into: &fileDaily[dayKey(date), default: [:]])
-                }
-
-                let entry = CodexFileCache(
-                    byteOffset: size,
-                    modifiedAt: modifiedAt,
-                    lastModel: currentModel,
-                    sessionID: eventTracker.sessionID,
-                    lastTurnID: eventTracker.turnID,
-                    lastEventKey: eventTracker.lastEventKey,
-                    daily: fileDaily
-                )
-                updatedCache[path] = entry
-                merge(entry.daily, into: &daily, from: startDate, through: endDate)
+            // Codex 归档只移动 JSONL；沿用原路径缓存可以避免归档后重新解析超大文件。
+            if cached == nil,
+               let previousPath = stalePaths.first(where: {
+                   URL(fileURLWithPath: $0).lastPathComponent == fileURL.lastPathComponent
+               }),
+               let movedCache = updatedCache.removeValue(forKey: previousPath) {
+                stalePaths.remove(previousPath)
+                updatedCache[path] = movedCache
+                cached = movedCache
             }
 
-            folderDate = calendar.date(byAdding: .day, value: 1, to: folderDate) ?? folderEnd.addingTimeInterval(1)
+            if let cached, cached.byteOffset == size, cached.modifiedAt == modifiedAt {
+                merge(cached.daily, into: &daily, from: startDate, through: endDate)
+                continue
+            }
+
+            // 首次发现的旧归档不可能包含当前统计窗口，等历史重算时再解析。
+            if cached == nil, modifiedAt < startDate.timeIntervalSince1970 {
+                continue
+            }
+
+            let canAppend = cached != nil && size >= (cached?.byteOffset ?? 0)
+            let offset = canAppend ? (cached?.byteOffset ?? 0) : 0
+            var fileDaily = canAppend ? (cached?.daily ?? [:]) : [:]
+            var currentModel = canAppend ? (cached?.lastModel ?? "未知模型") : "未知模型"
+            var eventTracker = CodexEventTracker(
+                sessionID: canAppend ? cached?.sessionID : nil,
+                turnID: canAppend ? cached?.lastTurnID : nil,
+                lastEventKey: canAppend ? cached?.lastEventKey : nil
+            )
+
+            try JSONLReader.read(fileURL, from: offset, prefixFilter: isPotentialCodexUsageLine) { data in
+                guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+                if object["type"] as? String == "session_meta",
+                   let payload = object["payload"] as? [String: Any],
+                   let sessionID = payload["id"] as? String {
+                    eventTracker.observeSession(sessionID)
+                    return
+                }
+
+                if object["type"] as? String == "turn_context",
+                   let payload = object["payload"] as? [String: Any],
+                   let model = payload["model"] as? String {
+                    currentModel = model
+                    if let turnID = payload["turn_id"] as? String {
+                        eventTracker.observeTurn(turnID)
+                    }
+                    return
+                }
+
+                if object["type"] as? String == "event_msg",
+                   let payload = object["payload"] as? [String: Any],
+                   payload["type"] as? String == "task_started",
+                   let turnID = payload["turn_id"] as? String {
+                    eventTracker.observeTurn(turnID)
+                    return
+                }
+
+                guard object["type"] as? String == "event_msg",
+                      let payload = object["payload"] as? [String: Any],
+                      payload["type"] as? String == "token_count",
+                      let info = payload["info"] as? [String: Any],
+                      let usage = info["last_token_usage"] as? [String: Any],
+                      eventTracker.shouldCount(totalUsage: info["total_token_usage"] as? [String: Any]),
+                      let timestamp = object["timestamp"] as? String,
+                      let date = parseISO8601(timestamp) else { return }
+
+                // Codex 的 input_tokens 已含 cached_input_tokens；output_tokens 已含推理输出。
+                let cachedInput = int64(usage["cached_input_tokens"])
+                let modelUsage = ModelTokenUsage(
+                    source: .codex,
+                    provider: "openai",
+                    model: currentModel,
+                    tokens: TokenBreakdown(
+                        input: max(0, int64(usage["input_tokens"]) - cachedInput),
+                        cachedInput: cachedInput,
+                        output: int64(usage["output_tokens"])
+                    )
+                )
+                mergeUsage(modelUsage, into: &fileDaily[dayKey(date), default: [:]])
+            }
+
+            let entry = CodexFileCache(
+                byteOffset: size,
+                modifiedAt: modifiedAt,
+                lastModel: currentModel,
+                sessionID: eventTracker.sessionID,
+                lastTurnID: eventTracker.turnID,
+                lastEventKey: eventTracker.lastEventKey,
+                daily: fileDaily
+            )
+            updatedCache[path] = entry
+            merge(entry.daily, into: &daily, from: startDate, through: endDate)
+        }
+
+        for stalePath in stalePaths {
+            updatedCache.removeValue(forKey: stalePath)
         }
 
         return (daily, updatedCache)
@@ -661,6 +669,38 @@ private enum TokenUsageError: LocalizedError {
 
 // MARK: - JSONL helpers
 
+func codexLogFileURLs(activeRoot: URL, archivedRoot: URL) -> [URL] {
+    let fileManager = FileManager.default
+    let keys: [URLResourceKey] = [.isRegularFileKey]
+    var files: [URL] = []
+
+    for root in [activeRoot, archivedRoot] where fileManager.fileExists(atPath: root.path) {
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { continue }
+
+        for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+            guard (try? url.resourceValues(forKeys: Set(keys)).isRegularFile) == true else { continue }
+            files.append(url)
+        }
+    }
+
+    return files.sorted { $0.path < $1.path }
+}
+
+private let codexUsageLineMarkers = [
+    Data("\"type\":\"session_meta\"".utf8),
+    Data("\"type\":\"turn_context\"".utf8),
+    Data("\"type\":\"task_started\"".utf8),
+    Data("\"type\":\"token_count\"".utf8),
+]
+
+private func isPotentialCodexUsageLine(_ data: Data) -> Bool {
+    codexUsageLineMarkers.contains { data.range(of: $0) != nil }
+}
+
 struct CodexEventTracker {
     private(set) var sessionID: String?
     private(set) var turnID: String?
@@ -700,22 +740,64 @@ struct CodexEventTracker {
 }
 
 private enum JSONLReader {
-    static func read(_ url: URL, from offset: UInt64 = 0, handler: (Data) -> Void) throws {
+    static func read(
+        _ url: URL,
+        from offset: UInt64 = 0,
+        prefixFilter: ((Data) -> Bool)? = nil,
+        handler: (Data) -> Void
+    ) throws {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         try handle.seek(toOffset: offset)
 
-        let newline = Data([0x0A])
+        let prefixLimit = 1_024
         var buffer = Data()
-        while let chunk = try handle.read(upToCount: 256 * 1_024), !chunk.isEmpty {
-            buffer.append(chunk)
-            while let range = buffer.range(of: newline) {
-                let line = buffer.subdata(in: buffer.startIndex..<range.lowerBound)
-                if !line.isEmpty { handler(line) }
-                buffer.removeSubrange(buffer.startIndex...range.lowerBound)
+        var isClassified = prefixFilter == nil
+        var shouldKeep = prefixFilter == nil
+
+        func append(_ segment: Data.SubSequence) {
+            guard !segment.isEmpty else { return }
+            if isClassified {
+                if shouldKeep { buffer.append(contentsOf: segment) }
+                return
+            }
+
+            let prefixCount = min(prefixLimit - buffer.count, segment.count)
+            let prefixEnd = segment.index(segment.startIndex, offsetBy: prefixCount)
+            buffer.append(contentsOf: segment[..<prefixEnd])
+            guard buffer.count >= prefixLimit else { return }
+
+            shouldKeep = prefixFilter?(buffer) ?? true
+            isClassified = true
+            if shouldKeep, prefixEnd < segment.endIndex {
+                buffer.append(contentsOf: segment[prefixEnd...])
+            } else if !shouldKeep {
+                buffer.removeAll(keepingCapacity: true)
             }
         }
-        if !buffer.isEmpty { handler(buffer) }
+
+        func finishLine() {
+            if !isClassified {
+                shouldKeep = prefixFilter?(buffer) ?? true
+            }
+            if shouldKeep, !buffer.isEmpty { handler(buffer) }
+            buffer.removeAll(keepingCapacity: true)
+            isClassified = prefixFilter == nil
+            shouldKeep = prefixFilter == nil
+        }
+
+        while let chunk = try handle.read(upToCount: 256 * 1_024), !chunk.isEmpty {
+            var lineStart = chunk.startIndex
+            while let newlineIndex = chunk[lineStart...].firstIndex(of: 0x0A) {
+                append(chunk[lineStart..<newlineIndex])
+                finishLine()
+                lineStart = chunk.index(after: newlineIndex)
+            }
+            if lineStart < chunk.endIndex {
+                append(chunk[lineStart...])
+            }
+        }
+        if !buffer.isEmpty { finishLine() }
     }
 }
 
