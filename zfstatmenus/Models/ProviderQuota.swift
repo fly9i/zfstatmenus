@@ -44,6 +44,29 @@ struct QuotaWindow: Equatable {
     var resetsAt: Date?
 }
 
+enum QuotaRemainingLevel: Equatable {
+    case empty
+    case critical
+    case low
+    case medium
+    case high
+}
+
+func quotaRemainingLevel(for percent: Double) -> QuotaRemainingLevel {
+    switch min(max(percent, 0), 100) {
+    case 0:
+        return .empty
+    case ..<25:
+        return .critical
+    case ..<50:
+        return .low
+    case ..<75:
+        return .medium
+    default:
+        return .high
+    }
+}
+
 struct ProviderQuota: Equatable {
     var fiveHour: QuotaWindow?
     var weekly: QuotaWindow?

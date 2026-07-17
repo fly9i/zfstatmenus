@@ -12,6 +12,7 @@ enum AppTheme {
     static let subtleFill = Color.primary.opacity(0.045)
     static let mutedText = Color.secondary
     static let success = Color(red: 0.18, green: 0.58, blue: 0.34)
+    static let caution = Color(red: 0.78, green: 0.66, blue: 0.12)
     static let warning = Color(red: 0.86, green: 0.52, blue: 0.12)
     static let danger = Color(red: 0.78, green: 0.25, blue: 0.25)
 

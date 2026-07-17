@@ -759,16 +759,43 @@ private struct QuotaWindowRow: View {
             let fraction = CGFloat(min(max(remainingPercent / 100, 0), 1))
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    .fill(AppTheme.subtleFill)
-                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    .fill(AppTheme.accent)
-                    .frame(width: fraction > 0 ? max(3, geometry.size.width * fraction) : 0)
+                    .fill(remainingLevel == .empty ? Color.white : AppTheme.subtleFill)
+                    .overlay {
+                        if remainingLevel == .empty {
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                        }
+                    }
+                if fraction > 0 {
+                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                        .fill(remainingColor)
+                        .frame(width: max(3, geometry.size.width * fraction))
+                }
             }
         }
         .frame(height: 5)
     }
 
     private var remainingPercent: Double { max(0, 100 - window.usedPercent) }
+
+    private var remainingLevel: QuotaRemainingLevel {
+        quotaRemainingLevel(for: remainingPercent)
+    }
+
+    private var remainingColor: Color {
+        switch remainingLevel {
+        case .empty:
+            return .white
+        case .critical:
+            return AppTheme.danger
+        case .low:
+            return AppTheme.warning
+        case .medium:
+            return AppTheme.caution
+        case .high:
+            return AppTheme.success
+        }
+    }
 
     private var usageText: String {
         if let used = window.used, let limit = window.limit, limit > 0 {

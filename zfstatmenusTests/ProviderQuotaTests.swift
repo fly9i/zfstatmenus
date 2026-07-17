@@ -2,6 +2,20 @@ import XCTest
 @testable import ZFStatMenus
 
 final class ProviderQuotaTests: XCTestCase {
+    func testQuotaRemainingLevelUsesExpectedColorThresholds() {
+        XCTAssertEqual(quotaRemainingLevel(for: -10), .empty)
+        XCTAssertEqual(quotaRemainingLevel(for: 0), .empty)
+        XCTAssertEqual(quotaRemainingLevel(for: 0.1), .critical)
+        XCTAssertEqual(quotaRemainingLevel(for: 24.99), .critical)
+        XCTAssertEqual(quotaRemainingLevel(for: 25), .low)
+        XCTAssertEqual(quotaRemainingLevel(for: 49.99), .low)
+        XCTAssertEqual(quotaRemainingLevel(for: 50), .medium)
+        XCTAssertEqual(quotaRemainingLevel(for: 74.99), .medium)
+        XCTAssertEqual(quotaRemainingLevel(for: 75), .high)
+        XCTAssertEqual(quotaRemainingLevel(for: 100), .high)
+        XCTAssertEqual(quotaRemainingLevel(for: 120), .high)
+    }
+
     // MARK: - Claude
 
     func testClaudeParsesFractionalUtilization() throws {
