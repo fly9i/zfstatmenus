@@ -80,7 +80,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
     }
 
     var hasStoredToken: Bool {
-        TokenSyncKeychain.loadToken() != nil
+        KeychainStore.loadToken() != nil
     }
 
     func saveConfiguration(
@@ -99,9 +99,9 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
         }
 
         if let newToken, !newToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            try TokenSyncKeychain.saveToken(newToken.trimmingCharacters(in: .whitespacesAndNewlines))
+            try KeychainStore.saveToken(newToken.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        if enabled && TokenSyncKeychain.loadToken() == nil {
+        if enabled && KeychainStore.loadToken() == nil {
             throw TokenSyncError.configuration("请填写访问 Token")
         }
 
@@ -125,7 +125,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
     }
 
     func clearToken() throws {
-        try TokenSyncKeychain.deleteToken()
+        try KeychainStore.deleteToken()
         AppPreferences.shared.tokenSyncEnabled = false
         queue.async { [weak self] in self?.publish(.disabled) }
     }
@@ -367,7 +367,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
     private func loadConfiguration() throws -> TokenSyncConfiguration {
         let prefs = AppPreferences.shared
         let serverURL = try Self.normalizedServerURL(prefs.tokenSyncServerURL)
-        guard let token = TokenSyncKeychain.loadToken() else {
+        guard let token = KeychainStore.loadToken() else {
             throw TokenSyncError.configuration("访问 Token 未配置")
         }
         return TokenSyncConfiguration(
@@ -609,12 +609,17 @@ private struct TokenSyncHTTPClient {
     }
 }
 
-private enum TokenSyncKeychain {
-    private static let service = "com.zfstat.ZFStatMenus.token-sync"
-    private static let account = "access-token"
+// 通用 Keychain 明文存取封装。默认 service/account 是多设备同步 Token；
+// 订阅额度等其他凭据通过传入不同 service/account 复用。
+enum KeychainStore {
+    private static let defaultService = "com.zfstat.ZFStatMenus.token-sync"
+    private static let defaultAccount = "access-token"
 
-    static func loadToken() -> String? {
-        var query = baseQuery
+    static func loadToken(
+        service: String = defaultService,
+        account: String = defaultAccount
+    ) -> String? {
+        var query = baseQuery(service: service, account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -623,28 +628,36 @@ private enum TokenSyncKeychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func saveToken(_ token: String) throws {
+    static func saveToken(
+        _ token: String,
+        service: String = defaultService,
+        account: String = defaultAccount
+    ) throws {
         let data = Data(token.utf8)
+        let query = baseQuery(service: service, account: account)
         let updateStatus = SecItemUpdate(
-            baseQuery as CFDictionary,
+            query as CFDictionary,
             [kSecValueData as String: data] as CFDictionary
         )
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else { throw keychainError(updateStatus) }
 
-        var item = baseQuery
+        var item = query
         item[kSecValueData as String] = data
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let addStatus = SecItemAdd(item as CFDictionary, nil)
         guard addStatus == errSecSuccess else { throw keychainError(addStatus) }
     }
 
-    static func deleteToken() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
+    static func deleteToken(
+        service: String = defaultService,
+        account: String = defaultAccount
+    ) throws {
+        let status = SecItemDelete(baseQuery(service: service, account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError(status) }
     }
 
-    private static var baseQuery: [String: Any] {
+    private static func baseQuery(service: String, account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

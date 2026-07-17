@@ -370,6 +370,18 @@ struct TokenSettingsView: View {
     @State private var showRecalculateConfirmation = false
     @State private var recalculationFeedback: String?
     @State private var recalculationHasError = false
+    // 订阅额度
+    @State private var kimiQuotaEnabled = true
+    @State private var codexQuotaEnabled = true
+    @State private var claudeQuotaEnabled = true
+    @State private var glmQuotaEnabled = true
+    @State private var glmAPIKeyInput = ""
+    @State private var hasGLMAPIKey = false
+    @State private var glmRegion = "cn"
+    @State private var claudeCredentialStatus = "正在检测…"
+    @State private var codexCredentialStatus = "正在检测…"
+    @State private var kimiCredentialStatus = "正在检测…"
+    @State private var quotaRefreshTask: Task<Void, Never>?
 
     var body: some View {
         SettingsPage(
@@ -386,6 +398,43 @@ struct TokenSettingsView: View {
                 SourceToggle(title: "Claude Code", path: "~/.claude/projects/", isOn: $claudeEnabled)
                 SettingsDivider()
                 SourceToggle(title: "Kimi CLI", path: "~/.kimi-code/sessions/", isOn: $kimiEnabled)
+            }
+
+            SettingsGroup(
+                title: "订阅额度",
+                subtitle: "在 Token 弹窗显示各平台 5 小时与每周额度；手动填写的凭据仅保存于本机 Keychain。"
+            ) {
+                SettingsRow(title: "Kimi", detail: kimiCredentialStatus) {
+                    Toggle("", isOn: $kimiQuotaEnabled).labelsHidden().toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(title: "GPT（Codex）", detail: codexCredentialStatus) {
+                    Toggle("", isOn: $codexQuotaEnabled).labelsHidden().toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(title: "Claude", detail: claudeCredentialStatus) {
+                    Toggle("", isOn: $claudeQuotaEnabled).labelsHidden().toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(title: "GLM", detail: "智谱 Coding Plan") {
+                    Toggle("", isOn: $glmQuotaEnabled).labelsHidden().toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(title: "GLM API Key", detail: "在智谱开放平台创建 API Key") {
+                    SecureField(hasGLMAPIKey ? "已安全保存，输入以更新" : "粘贴 API Key", text: $glmAPIKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 260)
+                }
+                SettingsDivider()
+                SettingsRow(title: "GLM 接口分区", detail: "国内账号 open.bigmodel.cn，国际账号 api.z.ai") {
+                    Picker("", selection: $glmRegion) {
+                        Text("国内").tag("cn")
+                        Text("国际").tag("global")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 140)
+                }
             }
 
             SettingsGroup(title: "刷新与费用") {
@@ -450,12 +499,24 @@ struct TokenSettingsView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 2)
         }
-        .onAppear { loadSources() }
+        .onAppear {
+            loadSources()
+            loadQuotaSettings()
+        }
         .onChange(of: openCodeEnabled) { _ in saveSources() }
         .onChange(of: zcodeEnabled) { _ in saveSources() }
         .onChange(of: codexEnabled) { _ in saveSources() }
         .onChange(of: claudeEnabled) { _ in saveSources() }
         .onChange(of: kimiEnabled) { _ in saveSources() }
+        .onChange(of: kimiQuotaEnabled) { _ in saveQuotaProviders() }
+        .onChange(of: codexQuotaEnabled) { _ in saveQuotaProviders() }
+        .onChange(of: claudeQuotaEnabled) { _ in saveQuotaProviders() }
+        .onChange(of: glmQuotaEnabled) { _ in saveQuotaProviders() }
+        .onChange(of: glmAPIKeyInput) { saveGLMAPIKey($0) }
+        .onChange(of: glmRegion) { region in
+            AppPreferences.shared.glmAPIRegion = region
+            ProviderQuotaMonitor.shared.refresh()
+        }
         .alert("重新计算 Token 用量？", isPresented: $showRecalculateConfirmation) {
             Button("取消", role: .cancel) {}
             Button("重新计算") { recalculateTokenUsage() }
@@ -481,6 +542,58 @@ struct TokenSettingsView: View {
         if claudeEnabled { sources.insert(.claude) }
         if kimiEnabled { sources.insert(.kimi) }
         AppPreferences.shared.enabledTokenSources = sources
+    }
+
+    private func loadQuotaSettings() {
+        let providers = AppPreferences.shared.enabledQuotaProviders
+        kimiQuotaEnabled = providers.contains(.kimi)
+        codexQuotaEnabled = providers.contains(.codex)
+        claudeQuotaEnabled = providers.contains(.claude)
+        glmQuotaEnabled = providers.contains(.glm)
+        glmRegion = AppPreferences.shared.glmAPIRegion
+        hasGLMAPIKey = ProviderQuotaKeychain.hasGLMAPIKey
+
+        // 凭据存在性检测放后台，避免阻塞设置页打开
+        DispatchQueue.global(qos: .utility).async {
+            let claude = ProviderQuotaFetcher.credentialStatus(for: .claude)
+            let codex = ProviderQuotaFetcher.credentialStatus(for: .codex)
+            let kimi = ProviderQuotaFetcher.credentialStatus(for: .kimi)
+            DispatchQueue.main.async {
+                self.claudeCredentialStatus = claude
+                self.codexCredentialStatus = codex
+                self.kimiCredentialStatus = kimi
+            }
+        }
+    }
+
+    private func saveQuotaProviders() {
+        var providers: Set<QuotaProvider> = []
+        if kimiQuotaEnabled { providers.insert(.kimi) }
+        if codexQuotaEnabled { providers.insert(.codex) }
+        if claudeQuotaEnabled { providers.insert(.claude) }
+        if glmQuotaEnabled { providers.insert(.glm) }
+        AppPreferences.shared.enabledQuotaProviders = providers
+        ProviderQuotaMonitor.shared.refresh()
+    }
+
+    private func saveGLMAPIKey(_ value: String) {
+        do {
+            try ProviderQuotaKeychain.saveGLMAPIKey(value)
+            hasGLMAPIKey = ProviderQuotaKeychain.hasGLMAPIKey
+            scheduleQuotaRefresh()
+        } catch {
+            AppLog.general.error("保存 GLM API Key 失败：\(error.localizedDescription)")
+        }
+    }
+
+    // 连续输入时合并刷新，避免每个字符都触发一次网络请求
+    private func scheduleQuotaRefresh() {
+        quotaRefreshTask?.cancel()
+        quotaRefreshTask = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            ProviderQuotaMonitor.shared.refresh()
+        }
     }
 
     private func recalculateTokenUsage() {

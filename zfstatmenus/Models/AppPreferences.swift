@@ -19,6 +19,8 @@ enum PrefKey: String {
     case tokenSyncServerURL = "tokenSyncServerURL"
     case tokenSyncDeviceID = "tokenSyncDeviceID"
     case tokenSyncDeviceName = "tokenSyncDeviceName"
+    case enabledQuotaProviders = "enabledQuotaProviders"
+    case glmAPIRegion = "glmAPIRegion"
 }
 
 final class AppPreferences {
@@ -46,6 +48,8 @@ final class AppPreferences {
             PrefKey.tokenSyncServerURL.rawValue: "",
             PrefKey.tokenSyncDeviceID.rawValue: "",
             PrefKey.tokenSyncDeviceName.rawValue: Host.current().localizedName ?? "Mac",
+            PrefKey.enabledQuotaProviders.rawValue: ["kimi", "codex", "claude", "glm"],
+            PrefKey.glmAPIRegion.rawValue: "cn",
         ])
     }
 
@@ -163,5 +167,21 @@ final class AppPreferences {
             return value.isEmpty ? (Host.current().localizedName ?? "Mac") : value
         }
         set { defaults.set(newValue, forKey: PrefKey.tokenSyncDeviceName.rawValue) }
+    }
+
+    var enabledQuotaProviders: Set<QuotaProvider> {
+        get {
+            let raw = defaults.stringArray(forKey: PrefKey.enabledQuotaProviders.rawValue) ?? []
+            return Set(raw.compactMap(QuotaProvider.init(rawValue:)))
+        }
+        set {
+            defaults.set(newValue.map(\.rawValue), forKey: PrefKey.enabledQuotaProviders.rawValue)
+        }
+    }
+
+    // GLM 接口分区：cn = open.bigmodel.cn，global = api.z.ai
+    var glmAPIRegion: String {
+        get { defaults.string(forKey: PrefKey.glmAPIRegion.rawValue) ?? "cn" }
+        set { defaults.set(newValue, forKey: PrefKey.glmAPIRegion.rawValue) }
     }
 }

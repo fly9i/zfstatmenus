@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		028CC62EA202568AA878D68F /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9CDD2DCAC48B2A794001E15 /* NetworkMonitor.swift */; };
+		094C5230D8EEF9FE96005127 /* ProviderQuota.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33E07F8EE13CB6C077AB409D /* ProviderQuota.swift */; };
 		1B63DC9D63836202D26AFDD7 /* Monitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0653CF46E2611B719567195 /* Monitor.swift */; };
 		1D68C04BA0CCA45AA5FA36ED /* TokenUsageMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C81528A33EA4FA28AAB91D4 /* TokenUsageMonitor.swift */; };
 		35CA42416888D5469C3F7EF4 /* StatusItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6BA47A37B413E8B8F7AA0CE /* StatusItemView.swift */; };
@@ -17,6 +18,8 @@
 		541338C23AB7DEC431EE4558 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D52E158B8F4575A2DD012AD /* AppCoordinator.swift */; };
 		5C9BD26BC014C0F91D5A80B0 /* TokenUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D0E0824C69A96FACB537A1 /* TokenUsage.swift */; };
 		65736CE95514DFE7B038B22A /* CPUMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0CF1B69F11D23C1B98555A1 /* CPUMonitor.swift */; };
+		6BF1C5D5615129FC6DF270C8 /* ProviderQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 543089743A5ED47D3E944E70 /* ProviderQuotaTests.swift */; };
+		6FF9B93A0AFBADFD415D94F1 /* ProviderQuotaMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 924F75724A0D24BC06A3382B /* ProviderQuotaMonitor.swift */; };
 		7648A5B5B8C2882627C11010 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC273FA9093E52AC3C9F564 /* Logger.swift */; };
 		7C2509177B4B03621743497E /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A79F74553EA02AD95C04542 /* StatusBarController.swift */; };
 		8FBBBC7B5019B9C41DE386A3 /* ZFStatMenusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3146B90EF2363FE04BE5559D /* ZFStatMenusApp.swift */; };
@@ -52,8 +55,10 @@
 		2A6EAED04456484EE096FE7B /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		2E1E5A4F064BD2B75C77DF36 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		3146B90EF2363FE04BE5559D /* ZFStatMenusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZFStatMenusApp.swift; sourceTree = "<group>"; };
+		33E07F8EE13CB6C077AB409D /* ProviderQuota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderQuota.swift; sourceTree = "<group>"; };
 		3EF34ED56E6B452EA345CC41 /* TokenUsageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenUsageTests.swift; sourceTree = "<group>"; };
 		4D52E158B8F4575A2DD012AD /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		543089743A5ED47D3E944E70 /* ProviderQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderQuotaTests.swift; sourceTree = "<group>"; };
 		581EBC9F57119AC9026E23DC /* ZFStatMenusTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZFStatMenusTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		6A79F74553EA02AD95C04542 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
 		72FC174E336A0A36333B3237 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
@@ -62,6 +67,7 @@
 		7E8B871E5E76FC70B3F984D8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		7F6FC6F2ABFF1E7C7CE6D7B7 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		9248F52CC4266CA8AE26C1F5 /* TokenSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSyncService.swift; sourceTree = "<group>"; };
+		924F75724A0D24BC06A3382B /* ProviderQuotaMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderQuotaMonitor.swift; sourceTree = "<group>"; };
 		95B51BB31A91AD7CD3D90BEA /* Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metrics.swift; sourceTree = "<group>"; };
 		966A8936E2EF333AC9F94735 /* AppTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTheme.swift; sourceTree = "<group>"; };
 		AFC273FA9093E52AC3C9F564 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
@@ -158,6 +164,7 @@
 		425DF94FD2071BFF443507AC /* TokenTracker */ = {
 			isa = PBXGroup;
 			children = (
+				924F75724A0D24BC06A3382B /* ProviderQuotaMonitor.swift */,
 				9248F52CC4266CA8AE26C1F5 /* TokenSyncService.swift */,
 				0C81528A33EA4FA28AAB91D4 /* TokenUsageMonitor.swift */,
 				1D0CDD0CECEB6C95E9E59282 /* TokenUsageStore.swift */,
@@ -186,6 +193,7 @@
 		BD781F1A7A7C490D2A47BE2E /* zfstatmenusTests */ = {
 			isa = PBXGroup;
 			children = (
+				543089743A5ED47D3E944E70 /* ProviderQuotaTests.swift */,
 				3EF34ED56E6B452EA345CC41 /* TokenUsageTests.swift */,
 			);
 			path = zfstatmenusTests;
@@ -205,6 +213,7 @@
 			children = (
 				0451B5804512601A76B6FD88 /* AppPreferences.swift */,
 				95B51BB31A91AD7CD3D90BEA /* Metrics.swift */,
+				33E07F8EE13CB6C077AB409D /* ProviderQuota.swift */,
 				C4D0E0824C69A96FACB537A1 /* TokenUsage.swift */,
 			);
 			path = Models;
@@ -322,6 +331,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6BF1C5D5615129FC6DF270C8 /* ProviderQuotaTests.swift in Sources */,
 				B7E5FACC3743C25190CED125 /* TokenUsageTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -343,6 +353,8 @@
 				028CC62EA202568AA878D68F /* NetworkMonitor.swift in Sources */,
 				B65E62F097C07F6EA856911A /* PopoverContent.swift in Sources */,
 				AF6460CE2A393E75A5BA8E37 /* ProcessMonitor.swift in Sources */,
+				094C5230D8EEF9FE96005127 /* ProviderQuota.swift in Sources */,
+				6FF9B93A0AFBADFD415D94F1 /* ProviderQuotaMonitor.swift in Sources */,
 				D2544EE686E5AE6D95C7A0FE /* SettingsView.swift in Sources */,
 				413F24A471ED0EA751927EE1 /* SettingsWindowController.swift in Sources */,
 				7C2509177B4B03621743497E /* StatusBarController.swift in Sources */,

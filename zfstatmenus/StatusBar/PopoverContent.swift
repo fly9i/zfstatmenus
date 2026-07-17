@@ -401,6 +401,7 @@ private struct NetworkProcessListPanel: View {
 struct TokenDetailView: View {
     @ObservedObject var monitor: TokenUsageMonitor
     @ObservedObject private var syncService = TokenSyncService.shared
+    @ObservedObject private var quotaMonitor = ProviderQuotaMonitor.shared
     @AppStorage("tokenDisplayCurrency") private var currency = "both"
     @AppStorage("tokenUSDToCNYRate") private var usdToCNYRate = 7.2
     @AppStorage("tokenShowDeviceBreakdown") private var showsDeviceBreakdown = true
@@ -442,6 +443,7 @@ struct TokenDetailView: View {
                     }
                     AppIconButton(systemName: "arrow.clockwise", help: "刷新 Token 数据") {
                         monitor.refresh()
+                        quotaMonitor.refresh()
                     }
                     AppIconButton(
                         systemName: "desktopcomputer",
@@ -489,6 +491,10 @@ struct TokenDetailView: View {
                         devices: monitor.deviceUsages,
                         showsDevices: showsDeviceBreakdown
                     )
+                }
+
+                if !quotaMonitor.quotas.isEmpty {
+                    ProviderQuotaPanel(quotas: quotaMonitor.quotas)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -578,6 +584,7 @@ struct TokenDetailView: View {
                 }
             }
         }
+        .onAppear { quotaMonitor.refreshIfStale() }
     }
 
     private var syncStatusHelp: String {
@@ -615,6 +622,7 @@ struct TokenDetailView: View {
             snapshot: monitor.snapshot,
             devices: monitor.deviceUsages,
             syncStatus: syncService.status,
+            quotas: quotaMonitor.quotas,
             currency: currency,
             usdToCNYRate: usdToCNYRate,
             showsDevices: showsDeviceBreakdown
@@ -630,6 +638,170 @@ struct TokenDetailView: View {
             didCopyShareImage = false
         }
     }
+}
+
+// MARK: - 订阅额度面板
+
+private struct ProviderQuotaPanel: View {
+    let quotas: [QuotaProvider: ProviderQuota]
+
+    // 展示顺序：GPT、GLM、Kimi、Claude（只有单窗口的卡片优先排在同一行）
+    private static let displayOrder: [QuotaProvider] = [.codex, .glm, .kimi, .claude]
+
+    private var providers: [QuotaProvider] {
+        Self.displayOrder.filter { quotas[$0] != nil }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AppSectionHeader(title: "订阅额度", subtitle: "各平台 5 小时与每周额度", trailing: updatedText)
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
+            ) {
+                ForEach(providers, id: \.self) { provider in
+                    if let quota = quotas[provider] {
+                        ProviderQuotaCard(provider: provider, quota: quota)
+                    }
+                }
+            }
+        }
+        .appPanel(padding: 13)
+    }
+
+    private var updatedText: String {
+        guard let latest = quotas.values.map(\.updatedAt).max() else { return "" }
+        return "更新于 \(Self.clockFormatter.string(from: latest))"
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+}
+
+private struct ProviderQuotaCard: View {
+    let provider: QuotaProvider
+    let quota: ProviderQuota
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(provider.displayName)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(provider.planName)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+            }
+            if let error = quota.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // 部分套餐没有 5 小时窗（如 Codex Pro Lite 只有每周额度），不存在的窗口不渲染
+                if let fiveHour = quota.fiveHour {
+                    QuotaWindowRow(title: "5小时", window: fiveHour, resetStyle: .clock)
+                }
+                if let weekly = quota.weekly {
+                    QuotaWindowRow(title: "本周", window: weekly, resetStyle: .weekday)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            AppTheme.subtleFill.opacity(0.65),
+            in: RoundedRectangle(cornerRadius: AppTheme.innerRadius, style: .continuous)
+        )
+    }
+}
+
+private struct QuotaWindowRow: View {
+    enum ResetStyle {
+        case clock    // 5 小时窗：显示当天时刻
+        case weekday  // 每周窗：一周内显示星期+时刻，否则显示月日
+    }
+
+    let title: String
+    let window: QuotaWindow
+    let resetStyle: ResetStyle
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text(usageText)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            progressBar
+            Text(detailText)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    // 只展示剩余：进度条同样表示剩余占比
+    private var progressBar: some View {
+        GeometryReader { geometry in
+            let fraction = CGFloat(min(max(remainingPercent / 100, 0), 1))
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(AppTheme.subtleFill)
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(AppTheme.accent)
+                    .frame(width: fraction > 0 ? max(3, geometry.size.width * fraction) : 0)
+            }
+        }
+        .frame(height: 5)
+    }
+
+    private var remainingPercent: Double { max(0, 100 - window.usedPercent) }
+
+    private var usageText: String {
+        if let used = window.used, let limit = window.limit, limit > 0 {
+            return "剩余 \(max(0, limit - used))/\(limit)"
+        }
+        return String(format: "剩余 %.0f%%", remainingPercent)
+    }
+
+    private var detailText: String {
+        guard let resetsAt = window.resetsAt else { return "重置时间未知" }
+        switch resetStyle {
+        case .clock:
+            return "\(Self.clockFormatter.string(from: resetsAt)) 重置"
+        case .weekday:
+            let formatter = resetsAt.timeIntervalSinceNow < 7 * 86_400
+                ? Self.weekdayFormatter
+                : Self.monthDayFormatter
+            return "\(formatter.string(from: resetsAt)) 重置"
+        }
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private static let weekdayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE HH:mm"
+        return formatter
+    }()
+
+    private static let monthDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M月d日"
+        return formatter
+    }()
 }
 
 private struct TokenSourceSection: View {
@@ -683,6 +855,7 @@ private struct TokenShareSnapshotView: View {
     let snapshot: TokenUsageSnapshot
     let devices: [DeviceTokenUsageSummary]
     let syncStatus: TokenSyncStatus
+    let quotas: [QuotaProvider: ProviderQuota]
     let currency: String
     let usdToCNYRate: Double
     let showsDevices: Bool
@@ -722,6 +895,10 @@ private struct TokenShareSnapshotView: View {
                 summaryCard(title: "今日", value: snapshot.todayTokens, dayCount: 1)
                 summaryCard(title: "过去 7 天", value: snapshot.last7DaysTokens, dayCount: 7)
                 summaryCard(title: "过去 30 天", value: snapshot.last30DaysTokens, dayCount: 30)
+            }
+
+            if !quotas.isEmpty {
+                ProviderQuotaPanel(quotas: quotas)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -788,6 +965,7 @@ private enum TokenShareSnapshotRenderer {
         snapshot: TokenUsageSnapshot,
         devices: [DeviceTokenUsageSummary],
         syncStatus: TokenSyncStatus,
+        quotas: [QuotaProvider: ProviderQuota],
         currency: String,
         usdToCNYRate: Double,
         showsDevices: Bool
@@ -796,6 +974,7 @@ private enum TokenShareSnapshotRenderer {
             snapshot: snapshot,
             devices: devices,
             syncStatus: syncStatus,
+            quotas: quotas,
             currency: currency,
             usdToCNYRate: usdToCNYRate,
             showsDevices: showsDevices

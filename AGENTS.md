@@ -12,6 +12,8 @@
 - Token 采集：`zfstatmenus/TokenTracker/TokenUsageMonitor.swift`
 - 本地 SQLite：`zfstatmenus/TokenTracker/TokenUsageStore.swift`
 - 多设备同步：`zfstatmenus/TokenTracker/TokenSyncService.swift`
+- 订阅额度采集：`zfstatmenus/TokenTracker/ProviderQuotaMonitor.swift`
+- 订阅额度模型与解析：`zfstatmenus/Models/ProviderQuota.swift`
 - Worker：`server/src/index.ts`
 - D1 迁移：`server/migrations/`
 
