@@ -18,15 +18,15 @@ final class ProviderQuotaTests: XCTestCase {
 
     // MARK: - Claude
 
-    func testClaudeParsesFractionalUtilization() throws {
+    func testClaudeParsesFractionalPercentageUtilization() throws {
         let json = """
         {"five_hour": {"utilization": 0.42, "resets_at": "2026-07-17T13:00:00.000Z"},
          "seven_day": {"utilization": 0.12, "resets_at": "2026-07-24T00:00:00.000Z"}}
         """
         let quota = try ProviderQuotaParser.parseClaude(Data(json.utf8))
 
-        XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 42, accuracy: 0.001)
-        XCTAssertEqual(quota.weekly?.usedPercent ?? -1, 12, accuracy: 0.001)
+        XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 0.42, accuracy: 0.001)
+        XCTAssertEqual(quota.weekly?.usedPercent ?? -1, 0.12, accuracy: 0.001)
         XCTAssertEqual(
             quota.fiveHour?.resetsAt?.timeIntervalSince1970 ?? 0,
             utcDate(2026, 7, 17, 13, 0).timeIntervalSince1970,
@@ -40,7 +40,6 @@ final class ProviderQuotaTests: XCTestCase {
     }
 
     func testClaudeParsesPercentFormUtilization() throws {
-        // utilization > 1 视为百分数；恰好 1 按 0~1 小数处理（即 100%）
         let json = """
         {"five_hour": {"utilization": 42, "resets_at": "2026-07-17T13:00:00Z"},
          "seven_day": {"utilization": 1, "resets_at": "2026-07-24T00:00:00Z"}}
@@ -48,14 +47,14 @@ final class ProviderQuotaTests: XCTestCase {
         let quota = try ProviderQuotaParser.parseClaude(Data(json.utf8))
 
         XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 42, accuracy: 0.001)
-        XCTAssertEqual(quota.weekly?.usedPercent ?? -1, 100, accuracy: 0.001)
+        XCTAssertEqual(quota.weekly?.usedPercent ?? -1, 1, accuracy: 0.001)
     }
 
     func testClaudeToleratesMissingResetsAt() throws {
         let json = #"{"five_hour": {"utilization": 0.5}}"#
         let quota = try ProviderQuotaParser.parseClaude(Data(json.utf8))
 
-        XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 50, accuracy: 0.001)
+        XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 0.5, accuracy: 0.001)
         XCTAssertNil(quota.fiveHour?.resetsAt)
         XCTAssertNil(quota.weekly)
     }

@@ -118,11 +118,8 @@ enum ProviderQuotaParser {
     private static func claudeWindow(_ value: Any?) -> QuotaWindow? {
         guard let dict = value as? [String: Any],
               let raw = dict["utilization"] as? NSNumber else { return nil }
-        var percent = raw.doubleValue
-        // utilization 可能是 0~1 小数，也可能是 0~100 百分数
-        if percent <= 1 { percent *= 100 }
         return QuotaWindow(
-            usedPercent: percent,
+            usedPercent: raw.doubleValue,
             resetsAt: (dict["resets_at"] as? String).flatMap(parseQuotaTimestamp)
         )
     }
