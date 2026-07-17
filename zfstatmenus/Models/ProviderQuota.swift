@@ -26,6 +26,15 @@ enum QuotaProvider: String, CaseIterable, Codable, Hashable {
         case .glm: return "智谱 Coding Plan"
         }
     }
+
+    var iconAssetName: String {
+        switch self {
+        case .kimi: return "ProviderKimi"
+        case .codex: return "ProviderGPT"
+        case .claude: return "ProviderClaude"
+        case .glm: return "ProviderGLM"
+        }
+    }
 }
 
 struct QuotaWindow: Equatable {

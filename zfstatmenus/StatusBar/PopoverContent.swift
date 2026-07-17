@@ -688,6 +688,11 @@ private struct ProviderQuotaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
+                Image(provider.iconAssetName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(AppTheme.accent)
                 Text(provider.displayName)
                     .font(.system(size: 12, weight: .semibold))
                 Text(provider.planName)
