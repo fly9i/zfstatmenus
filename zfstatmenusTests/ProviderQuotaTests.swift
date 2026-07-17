@@ -64,6 +64,87 @@ final class ProviderQuotaTests: XCTestCase {
         XCTAssertThrowsError(try ProviderQuotaParser.parseClaude(Data("{}".utf8)))
     }
 
+    func testClaudeOAuthCredentialParsesMillisExpiryAndRefreshToken() {
+        let json = """
+        {"claudeAiOauth": {
+          "accessToken": "access-old", "refreshToken": "refresh-old",
+          "expiresAt": 1893456000000,
+          "scopes": ["user:inference"], "subscriptionType": "max"
+        }}
+        """
+        let credential = parseClaudeOAuthCredential(Data(json.utf8))
+
+        XCTAssertEqual(credential?.accessToken, "access-old")
+        XCTAssertEqual(credential?.refreshToken, "refresh-old")
+        XCTAssertEqual(credential?.expiresAt, Date(timeIntervalSince1970: 1_893_456_000))
+        XCTAssertEqual(
+            credential?.isExpired(at: Date(timeIntervalSince1970: 1_893_455_980), leeway: 30),
+            true
+        )
+    }
+
+    func testClaudeOAuthCredentialAcceptsSecondsAndMissingExpiry() {
+        let seconds = parseClaudeOAuthCredential(Data(
+            #"{"claudeAiOauth":{"accessToken":"access","expiresAt":"1893456000"}}"#.utf8
+        ))
+        let missing = parseClaudeOAuthCredential(Data(
+            #"{"claudeAiOauth":{"accessToken":"access"}}"#.utf8
+        ))
+
+        XCTAssertEqual(seconds?.expiresAt, Date(timeIntervalSince1970: 1_893_456_000))
+        XCTAssertNil(missing?.expiresAt)
+        XCTAssertEqual(missing?.isExpired(at: Date()), false)
+    }
+
+    func testClaudeOAuthCredentialRejectsMissingTokenAndGarbage() {
+        XCTAssertNil(parseClaudeOAuthCredential(Data(
+            #"{"claudeAiOauth":{"refreshToken":"refresh"}}"#.utf8
+        )))
+        XCTAssertNil(parseClaudeOAuthCredential(Data("not json".utf8)))
+    }
+
+    func testClaudeRefreshResponseRotatesTokensAndPreservesMetadata() throws {
+        let original = Data("""
+        {"installId": "keep-me", "claudeAiOauth": {
+          "accessToken": "access-old", "refreshToken": "refresh-old",
+          "expiresAt": 1000, "scopes": ["old:scope"],
+          "subscriptionType": "max", "rateLimitTier": "default_claude_max_5x"
+        }}
+        """.utf8)
+        let response = Data("""
+        {"access_token":"access-new", "refresh_token":"refresh-new",
+         "expires_in":900, "scope":"user:inference user:profile", "token_type":"Bearer"}
+        """.utf8)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let updatedData = try XCTUnwrap(updateClaudeOAuthCredential(original, with: response, now: now))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: updatedData) as? [String: Any]
+        )
+        let oauth = try XCTUnwrap(object["claudeAiOauth"] as? [String: Any])
+
+        XCTAssertEqual(object["installId"] as? String, "keep-me")
+        XCTAssertEqual(oauth["accessToken"] as? String, "access-new")
+        XCTAssertEqual(oauth["refreshToken"] as? String, "refresh-new")
+        XCTAssertEqual(oauth["expiresAt"] as? Int64, 1_800_000_900_000)
+        XCTAssertEqual(oauth["scopes"] as? [String], ["user:inference", "user:profile"])
+        XCTAssertEqual(oauth["subscriptionType"] as? String, "max")
+        XCTAssertEqual(oauth["rateLimitTier"] as? String, "default_claude_max_5x")
+    }
+
+    func testClaudeRefreshResponseRejectsIncompletePayload() {
+        let original = Data(#"{"claudeAiOauth":{"accessToken":"old"}}"#.utf8)
+
+        XCTAssertNil(updateClaudeOAuthCredential(
+            original,
+            with: Data(#"{"access_token":"new","expires_in":900}"#.utf8)
+        ))
+        XCTAssertNil(updateClaudeOAuthCredential(
+            original,
+            with: Data(#"{"access_token":"new","refresh_token":"refresh","expires_in":0}"#.utf8)
+        ))
+    }
+
     // MARK: - Codex
 
     func testCodexMapsWindowsByDurationSeconds() throws {

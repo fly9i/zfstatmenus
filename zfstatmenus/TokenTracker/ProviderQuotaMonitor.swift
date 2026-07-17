@@ -212,6 +212,95 @@ private func kimiCLIExpiryDate(_ value: Any?) -> Date? {
     return Date(timeIntervalSince1970: seconds > 1e12 ? seconds / 1_000 : seconds)
 }
 
+// MARK: - Claude Code 凭据
+
+// Claude Code 的 access token 是短期凭据；登录状态由可轮换的 refresh token 维持。
+// expiresAt 在 Claude Code 凭据中使用毫秒时间戳。
+struct ClaudeOAuthCredential: Equatable {
+    let accessToken: String
+    let refreshToken: String?
+    let expiresAt: Date?
+
+    func isExpired(at now: Date = Date(), leeway: TimeInterval = 0) -> Bool {
+        guard let expiresAt else { return false }
+        return expiresAt <= now.addingTimeInterval(leeway)
+    }
+}
+
+private struct ClaudeOAuthRefreshResponse {
+    let accessToken: String
+    let refreshToken: String
+    let expiresIn: TimeInterval
+    let scopes: [String]?
+}
+
+// 解析完整 Claude Code 凭据，与 Keychain / 文件 IO 分离，便于覆盖格式兼容测试。
+func parseClaudeOAuthCredential(_ data: Data) -> ClaudeOAuthCredential? {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let oauth = object["claudeAiOauth"] as? [String: Any],
+          let accessToken = nonEmptyString(oauth["accessToken"]) else { return nil }
+    return ClaudeOAuthCredential(
+        accessToken: accessToken,
+        refreshToken: nonEmptyString(oauth["refreshToken"]),
+        expiresAt: claudeOAuthExpiryDate(oauth["expiresAt"])
+    )
+}
+
+// 将 OAuth 刷新响应合并回原始凭据，保留 subscriptionType、rateLimitTier 等 Claude Code 字段。
+func updateClaudeOAuthCredential(
+    _ originalData: Data,
+    with refreshData: Data,
+    now: Date = Date()
+) -> Data? {
+    guard var object = try? JSONSerialization.jsonObject(with: originalData) as? [String: Any],
+          var oauth = object["claudeAiOauth"] as? [String: Any],
+          let response = parseClaudeOAuthRefreshResponse(refreshData) else { return nil }
+
+    oauth["accessToken"] = response.accessToken
+    oauth["refreshToken"] = response.refreshToken
+    oauth["expiresAt"] = Int64(now.addingTimeInterval(response.expiresIn).timeIntervalSince1970 * 1_000)
+    if let scopes = response.scopes, !scopes.isEmpty {
+        oauth["scopes"] = scopes
+    }
+    object["claudeAiOauth"] = oauth
+    return try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+}
+
+private func parseClaudeOAuthRefreshResponse(_ data: Data) -> ClaudeOAuthRefreshResponse? {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let accessToken = nonEmptyString(object["access_token"]),
+          let refreshToken = nonEmptyString(object["refresh_token"]),
+          let expiresIn = positiveNumber(object["expires_in"]) else { return nil }
+
+    let scopes: [String]?
+    if let scope = nonEmptyString(object["scope"]) {
+        scopes = scope.split(whereSeparator: \.isWhitespace).map(String.init)
+    } else if let values = object["scopes"] as? [String] {
+        scopes = values.filter { !$0.isEmpty }
+    } else {
+        scopes = nil
+    }
+    return ClaudeOAuthRefreshResponse(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        expiresIn: expiresIn,
+        scopes: scopes
+    )
+}
+
+private func claudeOAuthExpiryDate(_ value: Any?) -> Date? {
+    let raw: Double?
+    if let number = value as? NSNumber {
+        raw = number.doubleValue
+    } else if let string = value as? String {
+        raw = Double(string)
+    } else {
+        raw = nil
+    }
+    guard let timestamp = raw, timestamp > 0 else { return nil }
+    return Date(timeIntervalSince1970: timestamp > 1e12 ? timestamp / 1_000 : timestamp)
+}
+
 // MARK: - 凭据检测与网络请求
 
 enum ProviderQuotaError: LocalizedError {
@@ -232,6 +321,17 @@ enum ProviderQuotaFetcher {
     private struct KimiCredentialFile {
         let url: URL
         let credential: KimiCLICredential
+    }
+
+    private enum ClaudeCredentialSource {
+        case keychain(account: String?)
+        case file(URL)
+    }
+
+    private struct ClaudeCredentialFile {
+        let source: ClaudeCredentialSource
+        let data: Data
+        let credential: ClaudeOAuthCredential
     }
 
     // 返回 nil 表示未配置或检测不到凭据（弹窗不展示该卡片）
@@ -428,51 +528,156 @@ enum ProviderQuotaFetcher {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
     }
 
+    private static let claudeOAuthTokenURL = URL(string: "https://platform.claude.com/v1/oauth/token")!
+    private static let claudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
     private static func fetchClaude() async -> ProviderQuota? {
-        guard let accessToken = claudeAccessToken() else { return nil }
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        guard var credentialFile = loadClaudeCredentialFile() else { return nil }
+        if credentialFile.credential.isExpired(leeway: 60) {
+            do {
+                credentialFile = try await refreshClaudeCredential(credentialFile)
+            } catch {
+                return .failure(errorMessage(
+                    error,
+                    authHint: "Claude 自动刷新失败，请在终端重新登录 Claude Code"
+                ))
+            }
+        }
+
         do {
-            let data = try await send(request)
-            return try ProviderQuotaParser.parseClaude(data)
+            return try await fetchClaudeUsage(accessToken: credentialFile.credential.accessToken)
+        } catch ProviderQuotaError.unauthorized {
+            // expiresAt 缺失、时钟偏差或服务端提前撤销时，401/403 后刷新并只重试一次。
+            do {
+                credentialFile = try await refreshClaudeCredential(credentialFile)
+                return try await fetchClaudeUsage(accessToken: credentialFile.credential.accessToken)
+            } catch {
+                return .failure(errorMessage(
+                    error,
+                    authHint: "Claude 自动刷新失败，请在终端重新登录 Claude Code"
+                ))
+            }
         } catch {
             return .failure(errorMessage(error, authHint: "Claude 凭据已失效，请在终端重新登录 Claude Code"))
         }
     }
 
+    private static func fetchClaudeUsage(accessToken: String) async throws -> ProviderQuota {
+        let url = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        let data = try await send(request)
+        return try ProviderQuotaParser.parseClaude(data)
+    }
+
     // 凭据优先级：① Keychain（service: Claude Code-credentials）② ~/.claude/.credentials.json
     // 注意：读取 Keychain 数据会触发一次系统授权弹窗，属预期行为。
-    private static func claudeAccessToken() -> String? {
-        if let json = readClaudeKeychain(),
-           let token = parseClaudeAccessToken(json) {
-            return token
+    private static func loadClaudeCredentialFile() -> ClaudeCredentialFile? {
+        if let item = readClaudeKeychain(),
+           let credential = parseClaudeOAuthCredential(item.data) {
+            return ClaudeCredentialFile(
+                source: .keychain(account: item.account),
+                data: item.data,
+                credential: credential
+            )
         }
-        if let data = try? Data(contentsOf: claudeCredentialsFileURL) {
-            return parseClaudeAccessToken(data)
+        if let data = try? Data(contentsOf: claudeCredentialsFileURL),
+           let credential = parseClaudeOAuthCredential(data) {
+            return ClaudeCredentialFile(source: .file(claudeCredentialsFileURL), data: data, credential: credential)
         }
         return nil
     }
 
-    private static func parseClaudeAccessToken(_ data: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = object["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String,
-              !token.isEmpty else { return nil }
-        return token
+    private static func refreshClaudeCredential(
+        _ credentialFile: ClaudeCredentialFile
+    ) async throws -> ClaudeCredentialFile {
+        guard let refreshToken = credentialFile.credential.refreshToken else {
+            throw ProviderQuotaError.unauthorized
+        }
+
+        var request = URLRequest(url: claudeOAuthTokenURL)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": claudeOAuthClientID,
+        ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let refreshData: Data
+        do {
+            refreshData = try await send(request)
+        } catch {
+            // Claude Code 可能已在请求期间轮换凭据；此时直接采用磁盘上的新值。
+            if let latest = newerClaudeCredential(than: refreshToken) { return latest }
+            if let quotaError = error as? ProviderQuotaError,
+               case .http(400) = quotaError {
+                throw ProviderQuotaError.unauthorized
+            }
+            throw error
+        }
+
+        guard let updatedData = updateClaudeOAuthCredential(credentialFile.data, with: refreshData),
+              let updatedCredential = parseClaudeOAuthCredential(updatedData) else {
+            throw ProviderQuotaError.network("Claude OAuth 刷新响应异常")
+        }
+
+        // 写入前再次检测 Claude Code 是否抢先完成刷新，避免用旧请求结果覆盖其新 refresh token。
+        if let latest = newerClaudeCredential(than: refreshToken) { return latest }
+        try saveClaudeCredential(updatedData, to: credentialFile.source)
+        return ClaudeCredentialFile(
+            source: credentialFile.source,
+            data: updatedData,
+            credential: updatedCredential
+        )
     }
 
-    private static func readClaudeKeychain() -> Data? {
+    private static func newerClaudeCredential(than refreshToken: String) -> ClaudeCredentialFile? {
+        guard let latest = loadClaudeCredentialFile(),
+              let latestRefreshToken = latest.credential.refreshToken,
+              latestRefreshToken != refreshToken else { return nil }
+        return latest
+    }
+
+    private static func saveClaudeCredential(_ data: Data, to source: ClaudeCredentialSource) throws {
+        switch source {
+        case .keychain(let account):
+            var query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: "Claude Code-credentials",
+            ]
+            if let account {
+                query[kSecAttrAccount as String] = account
+            }
+            let status = SecItemUpdate(
+                query as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary
+            )
+            guard status == errSecSuccess else {
+                let message = SecCopyErrorMessageString(status, nil) as String? ?? "未知错误"
+                throw ProviderQuotaError.network("无法更新 Claude Keychain 凭据：\(message)")
+            }
+        case .file(let url):
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+    }
+
+    private static func readClaudeKeychain() -> (data: Data, account: String?)? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "Claude Code-credentials",
             kSecReturnData as String: true,
+            kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let item = result as? [String: Any],
+              let data = item[kSecValueData as String] as? Data else { return nil }
+        return (data, item[kSecAttrAccount as String] as? String)
     }
 
     // 仅检查存在性（不取回数据），避免设置页检测时触发授权弹窗
