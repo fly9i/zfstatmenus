@@ -132,12 +132,16 @@ enum ProviderQuotaKeychain {
 // Kimi CLI 登录后保存在 ~/.kimi-code/credentials/ 下的访问凭据。
 struct KimiCLICredential: Equatable {
     let accessToken: String
+    let refreshToken: String?
     let expiresAt: Date?
+    let expiresIn: TimeInterval?
+    let scope: String?
+    let tokenType: String?
 
-    // 缺少 expires_at 时无法判断，按未过期处理
-    func isExpired(at now: Date = Date()) -> Bool {
+    // 提前少量刷新，避免额度请求期间令牌刚好过期
+    func isExpired(at now: Date = Date(), leeway: TimeInterval = 0) -> Bool {
         guard let expiresAt else { return false }
-        return expiresAt <= now
+        return expiresAt <= now.addingTimeInterval(leeway)
     }
 }
 
@@ -147,7 +151,51 @@ func parseKimiCLICredential(_ data: Data) -> KimiCLICredential? {
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let token = object["access_token"] as? String,
           !token.isEmpty else { return nil }
-    return KimiCLICredential(accessToken: token, expiresAt: kimiCLIExpiryDate(object["expires_at"]))
+    return KimiCLICredential(
+        accessToken: token,
+        refreshToken: nonEmptyString(object["refresh_token"]),
+        expiresAt: kimiCLIExpiryDate(object["expires_at"]),
+        expiresIn: positiveNumber(object["expires_in"]),
+        scope: nonEmptyString(object["scope"]),
+        tokenType: nonEmptyString(object["token_type"])
+    )
+}
+
+// 解析 Kimi OAuth 刷新响应，并以本机时间计算新的 expires_at。
+func parseKimiCLIRefreshResponse(
+    _ data: Data,
+    now: Date = Date()
+) -> KimiCLICredential? {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let accessToken = nonEmptyString(object["access_token"]),
+          let refreshToken = nonEmptyString(object["refresh_token"]),
+          let expiresIn = positiveNumber(object["expires_in"]) else { return nil }
+    return KimiCLICredential(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        expiresAt: now.addingTimeInterval(expiresIn),
+        expiresIn: expiresIn,
+        scope: nonEmptyString(object["scope"]),
+        tokenType: nonEmptyString(object["token_type"]) ?? "Bearer"
+    )
+}
+
+private func nonEmptyString(_ value: Any?) -> String? {
+    guard let value = value as? String, !value.isEmpty else { return nil }
+    return value
+}
+
+private func positiveNumber(_ value: Any?) -> Double? {
+    let number: Double?
+    if let value = value as? NSNumber {
+        number = value.doubleValue
+    } else if let value = value as? String {
+        number = Double(value)
+    } else {
+        number = nil
+    }
+    guard let number, number > 0 else { return nil }
+    return number
 }
 
 // expires_at 单位防御：大于 1e12 视为毫秒，否则视为秒
@@ -181,6 +229,11 @@ enum ProviderQuotaError: LocalizedError {
 }
 
 enum ProviderQuotaFetcher {
+    private struct KimiCredentialFile {
+        let url: URL
+        let credential: KimiCLICredential
+    }
+
     // 返回 nil 表示未配置或检测不到凭据（弹窗不展示该卡片）
     static func fetch(_ provider: QuotaProvider) async -> ProviderQuota? {
         switch provider {
@@ -196,6 +249,9 @@ enum ProviderQuotaFetcher {
         switch provider {
         case .kimi:
             if let credential = loadKimiCLICredential() {
+                if credential.isExpired(), credential.refreshToken != nil {
+                    return "已检测到 Kimi CLI 凭据（过期时自动刷新）"
+                }
                 return credential.isExpired() ? "Kimi CLI 凭据已过期" : "已检测到 Kimi CLI 凭据"
             }
             return "未检测到 Kimi CLI 凭据，请先在终端登录 Kimi CLI"
@@ -221,9 +277,21 @@ enum ProviderQuotaFetcher {
 
     private static func fetchKimi() async -> ProviderQuota? {
         // 凭据只用 Kimi CLI 本地凭据；检测不到则返回 nil（不展示卡片）
-        guard let credential = loadKimiCLICredential() else { return nil }
-        guard !credential.isExpired() else {
-            return .failure("Kimi CLI 登录已过期，请在终端运行一次 kimi")
+        guard let credentialFile = loadKimiCLICredentialFile() else { return nil }
+        var credential = credentialFile.credential
+        if credential.isExpired(leeway: 30) {
+            guard let refreshToken = credential.refreshToken else {
+                return .failure("Kimi CLI 登录已过期且无法自动刷新，请在终端运行一次 kimi")
+            }
+            do {
+                credential = try await refreshKimiCredential(refreshToken: refreshToken)
+                try saveKimiCLICredential(credential, to: credentialFile.url)
+            } catch {
+                return .failure(errorMessage(
+                    error,
+                    authHint: "Kimi CLI 自动刷新失败，请在终端运行一次 kimi（必要时 /login）"
+                ))
+            }
         }
         // 与 Kimi CLI /usage 同一实现：GET {base}/usages，base 固定为官方默认值
         guard let url = URL(string: "https://api.kimi.com/coding/v1/usages") else { return nil }
@@ -236,6 +304,45 @@ enum ProviderQuotaFetcher {
         } catch {
             return .failure(errorMessage(error, authHint: "Kimi CLI 凭据已失效，请在终端运行一次 kimi（必要时 /login）"))
         }
+    }
+
+    private static func refreshKimiCredential(refreshToken: String) async throws -> KimiCLICredential {
+        let oauthHost = ProcessInfo.processInfo.environment["KIMI_CODE_OAUTH_HOST"]
+            ?? ProcessInfo.processInfo.environment["KIMI_OAUTH_HOST"]
+            ?? "https://auth.kimi.com"
+        guard let url = URL(string: oauthHost.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/oauth/token") else {
+            throw ProviderQuotaError.network("Kimi OAuth 地址无效")
+        }
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: "17e5f671-d194-4dfb-9706-5516cb48c098"),
+            URLQueryItem(name: "grant_type", value: "refresh_token"),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+        ]
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let data = try await send(request)
+        guard let credential = parseKimiCLIRefreshResponse(data) else {
+            throw ProviderQuotaError.network("Kimi OAuth 刷新响应异常")
+        }
+        return credential
+    }
+
+    private static func saveKimiCLICredential(_ credential: KimiCLICredential, to url: URL) throws {
+        var object: [String: Any] = [
+            "access_token": credential.accessToken,
+            "expires_at": Int(credential.expiresAt?.timeIntervalSince1970 ?? 0),
+            "token_type": credential.tokenType ?? "Bearer",
+        ]
+        if let refreshToken = credential.refreshToken { object["refresh_token"] = refreshToken }
+        if let expiresIn = credential.expiresIn { object["expires_in"] = Int(expiresIn) }
+        if let scope = credential.scope { object["scope"] = scope }
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     // credentials 目录：KIMI_CODE_HOME 存在时以其为根目录，否则 ~/.kimi-code
@@ -251,6 +358,10 @@ enum ProviderQuotaFetcher {
     // 扫描 credentials 目录下的 *.json（目录列举不递归，mcp/ 等子目录天然跳过），
     // 返回第一个含非空 access_token 的凭据
     private static func loadKimiCLICredential() -> KimiCLICredential? {
+        loadKimiCLICredentialFile()?.credential
+    }
+
+    private static func loadKimiCLICredentialFile() -> KimiCredentialFile? {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: kimiCredentialsDirectoryURL,
             includingPropertiesForKeys: [.isRegularFileKey],
@@ -261,7 +372,7 @@ enum ProviderQuotaFetcher {
             guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
                   let data = try? Data(contentsOf: fileURL),
                   let credential = parseKimiCLICredential(data) else { continue }
-            return credential
+            return KimiCredentialFile(url: fileURL, credential: credential)
         }
         return nil
     }

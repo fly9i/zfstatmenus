@@ -264,7 +264,11 @@ final class ProviderQuotaTests: XCTestCase {
         let credential = parseKimiCLICredential(Data(json.utf8))
 
         XCTAssertEqual(credential?.accessToken, "token-abc")
+        XCTAssertEqual(credential?.refreshToken, "refresh-abc")
         XCTAssertEqual(credential?.expiresAt, Date(timeIntervalSince1970: 1_893_456_000))
+        XCTAssertEqual(credential?.expiresIn, 3600)
+        XCTAssertEqual(credential?.scope, "all")
+        XCTAssertEqual(credential?.tokenType, "Bearer")
         // 1893456000 ≈ 2030-01-01，对更早的时间点未过期，对更晚的时间点已过期
         XCTAssertEqual(credential?.isExpired(at: Date(timeIntervalSince1970: 1_800_000_000)), false)
         XCTAssertEqual(credential?.isExpired(at: Date(timeIntervalSince1970: 1_900_000_000)), true)
@@ -291,6 +295,36 @@ final class ProviderQuotaTests: XCTestCase {
         XCTAssertEqual(credential?.accessToken, "token-abc")
         XCTAssertNil(credential?.expiresAt)
         XCTAssertEqual(credential?.isExpired(at: Date()), false)
+    }
+
+    func testKimiCLICredentialExpiryLeeway() {
+        let credential = parseKimiCLICredential(Data(
+            #"{"access_token":"token-abc","expires_at":1893456000}"#.utf8
+        ))
+
+        XCTAssertEqual(
+            credential?.isExpired(at: Date(timeIntervalSince1970: 1_893_455_980), leeway: 30),
+            true
+        )
+    }
+
+    func testKimiCLIRefreshResponseParsesAndCalculatesExpiry() {
+        let data = Data(#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":900,"scope":"kimi-code","token_type":"Bearer"}"#.utf8)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let credential = parseKimiCLIRefreshResponse(data, now: now)
+
+        XCTAssertEqual(credential?.accessToken, "new-access")
+        XCTAssertEqual(credential?.refreshToken, "new-refresh")
+        XCTAssertEqual(credential?.expiresAt, Date(timeIntervalSince1970: 1_800_000_900))
+        XCTAssertEqual(credential?.expiresIn, 900)
+        XCTAssertEqual(credential?.scope, "kimi-code")
+        XCTAssertEqual(credential?.tokenType, "Bearer")
+    }
+
+    func testKimiCLIRefreshResponseRejectsIncompletePayload() {
+        XCTAssertNil(parseKimiCLIRefreshResponse(Data(#"{"access_token":"new-access","expires_in":900}"#.utf8)))
+        XCTAssertNil(parseKimiCLIRefreshResponse(Data(#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":0}"#.utf8)))
+        XCTAssertNil(parseKimiCLIRefreshResponse(Data("not json".utf8)))
     }
 
     // MARK: - 辅助
