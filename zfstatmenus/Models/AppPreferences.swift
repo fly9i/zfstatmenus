@@ -15,6 +15,7 @@ enum PrefKey: String {
     case tokenStatusItemIntroduced = "tokenStatusItemIntroduced"
     case tokenZCodeSourceIntroduced = "tokenZCodeSourceIntroduced"
     case tokenKimiSourceIntroduced = "tokenKimiSourceIntroduced"
+    case monitorRealtimeIntroduced = "monitorRealtimeIntroduced"
     case tokenSyncEnabled = "tokenSyncEnabled"
     case tokenSyncServerURL = "tokenSyncServerURL"
     case tokenSyncDeviceID = "tokenSyncDeviceID"
@@ -34,7 +35,7 @@ final class AppPreferences {
 
     private func registerDefaults() {
         defaults.register(defaults: [
-            PrefKey.monitorInterval.rawValue: 1.0,
+            PrefKey.monitorInterval.rawValue: 0.5,
             PrefKey.tokenRefreshInterval.rawValue: 60.0,
             PrefKey.enabledStatusItems.rawValue: ["cpu", "memory", "network"],
             PrefKey.enabledTokenTrackers.rawValue: ["opencode", "zcode", "codex", "claude", "kimi"],
@@ -54,6 +55,14 @@ final class AppPreferences {
     }
 
     private func migrateDefaults() {
+        // 旧版默认值为 1 秒；首次升级到实时刷新时迁移该默认值，同时保留用户选择的 2/5 秒低频设置。
+        if !defaults.bool(forKey: PrefKey.monitorRealtimeIntroduced.rawValue) {
+            if defaults.double(forKey: PrefKey.monitorInterval.rawValue) == 1.0 {
+                defaults.set(0.5, forKey: PrefKey.monitorInterval.rawValue)
+            }
+            defaults.set(true, forKey: PrefKey.monitorRealtimeIntroduced.rawValue)
+        }
+
         // Token 栏目首次正式可用时自动展示一次，之后尊重用户在设置中的开关。
         if !defaults.bool(forKey: PrefKey.tokenStatusItemIntroduced.rawValue) {
             var items = enabledStatusItems

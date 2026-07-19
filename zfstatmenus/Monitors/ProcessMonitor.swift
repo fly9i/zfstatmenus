@@ -32,17 +32,54 @@ final class ProcessMonitor {
     private let networkQueue = DispatchQueue(label: "com.zfstat.procmon.network", qos: .utility)
     private var iconCache: [Int32: NSImage] = [:]
     private let iconCacheLock = NSLock()
+    private var samplingInterval: TimeInterval = 1.0
+    private var activeRanking: StatusItemType?
 
     func start(interval: TimeInterval = 1.0) {
-        stop()
-        let samplingInterval = max(1.0, interval)
+        // top/nettop 需要约一秒产生相邻采样差值，低于一秒时保持连续采样但不重叠启动进程。
+        samplingInterval = max(1.0, interval)
+        restartActiveSampling()
+    }
 
+    func activate(_ type: StatusItemType) {
+        guard type == .cpu || type == .memory || type == .network else { return }
+        activeRanking = type
+        restartActiveSampling()
+    }
+
+    func deactivate(_ type: StatusItemType) {
+        guard activeRanking == type else { return }
+        activeRanking = nil
+        cancelTimers()
+    }
+
+    func stop() {
+        activeRanking = nil
+        cancelTimers()
+    }
+
+    private func restartActiveSampling() {
+        cancelTimers()
+
+        switch activeRanking {
+        case .cpu, .memory:
+            startCPUMemorySampling()
+        case .network:
+            startNetworkSampling()
+        case .token, nil:
+            break
+        }
+    }
+
+    private func startCPUMemorySampling() {
         let t1 = DispatchSource.makeTimerSource(queue: cpuMemQueue)
         t1.schedule(deadline: .now(), repeating: samplingInterval)
         t1.setEventHandler { [weak self] in self?.sampleCPUMem() }
         t1.resume()
         cpuMemTimer = t1
+    }
 
+    private func startNetworkSampling() {
         let t2 = DispatchSource.makeTimerSource(queue: networkQueue)
         t2.schedule(deadline: .now(), repeating: samplingInterval)
         t2.setEventHandler { [weak self] in self?.sampleNetwork() }
@@ -50,7 +87,7 @@ final class ProcessMonitor {
         netTimer = t2
     }
 
-    func stop() {
+    private func cancelTimers() {
         cpuMemTimer?.cancel()
         cpuMemTimer = nil
         netTimer?.cancel()

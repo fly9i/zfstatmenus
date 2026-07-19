@@ -42,7 +42,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
-    @AppStorage("monitorInterval") private var monitorInterval = 1.0
+    @AppStorage("monitorInterval") private var monitorInterval = 0.5
     @AppStorage("showSparkline") private var showSparkline = true
     @AppStorage("showValueText") private var showValueText = true
     @State private var selection: SettingsPane = .general
@@ -235,9 +235,10 @@ struct GeneralSettingsView: View {
             title: "通用",
             subtitle: "控制系统指标采样频率与基础运行信息。"
         ) {
-            SettingsGroup(title: "实时监控", subtitle: "更短的间隔响应更快，也会增加少量系统开销。") {
+            SettingsGroup(title: "实时监控", subtitle: "默认每 0.5 秒刷新；进程排行约每秒生成一次有效采样。") {
                 SettingsRow(title: "采样间隔", detail: "CPU、内存与网络刷新频率") {
                     Picker("", selection: $monitorInterval) {
+                        Text("实时").tag(0.5)
                         Text("1 秒").tag(1.0)
                         Text("2 秒").tag(2.0)
                         Text("5 秒").tag(5.0)

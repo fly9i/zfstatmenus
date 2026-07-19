@@ -1754,6 +1754,7 @@ final class MonitorHolder: ObservableObject {
 
     func start(_ type: StatusItemType) {
         observingType = type
+        monitorManager.processMonitor.activate(type)
 
         switch type {
         case .cpu:
@@ -1774,12 +1775,17 @@ final class MonitorHolder: ObservableObject {
         }
 
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let refreshTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        RunLoop.main.add(refreshTimer, forMode: .common)
+        timer = refreshTimer
     }
 
     func stop() {
+        if let observingType {
+            monitorManager.processMonitor.deactivate(observingType)
+        }
         timer?.invalidate()
         timer = nil
         observingType = nil
