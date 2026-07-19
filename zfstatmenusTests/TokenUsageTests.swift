@@ -592,6 +592,31 @@ final class TokenUsageTests: XCTestCase {
         )
     }
 
+    func testNetstatNetworkSocketParserHandlesTCPUDPAndProcessNames() {
+        let output = """
+        Active Internet connections (including servers)
+        Proto Recv-Q Send-Q  Local Address                                 Foreign Address                               (state)          rxbytes      txbytes  rhiwat  shiwat          process:pid    state  options           gencnt    flags   flags1 usecnt rtncnt fltrs
+        tcp4       0      0  127.0.0.1.52163        127.0.0.1.7890         ESTABLISHED         6858        30343  405248  146988 Google Chrome He:9864   00102 00000008 000000001136d81f 00000080 04000900      2      0 000000
+        udp4       0      0  *.62101                *.*                                      298472       108512  786896    9216        DoubaoIme:834    00100 00000000 000000000b53ddc9 00000001 04000800      1      0 000002
+        """
+
+        let sockets = parseNetstatNetworkSockets(output)
+
+        guard sockets.count == 2 else {
+            XCTFail("应解析出 TCP 与 UDP 两条记录，实际为 \(sockets.count)")
+            return
+        }
+        XCTAssertEqual(sockets[0].pid, 9864)
+        XCTAssertEqual(sockets[0].name, "Google Chrome He")
+        XCTAssertEqual(sockets[0].bytesIn, 6_858)
+        XCTAssertEqual(sockets[0].bytesOut, 30_343)
+        XCTAssertEqual(sockets[1].pid, 834)
+        XCTAssertEqual(sockets[1].name, "DoubaoIme")
+        XCTAssertEqual(sockets[1].bytesIn, 298_472)
+        XCTAssertEqual(sockets[1].bytesOut, 108_512)
+        XCTAssertNotEqual(sockets[0].id, sockets[1].id)
+    }
+
     func testTokenSyncRetryPolicyUsesBoundedBackoff() {
         XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 0), 30)
         XCTAssertEqual(TokenSyncRetryPolicy.delay(failureCount: 1), 30)

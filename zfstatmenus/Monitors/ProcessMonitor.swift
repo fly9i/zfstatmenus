@@ -19,6 +19,14 @@ struct NetworkProcess: Identifiable {
     let icon: NSImage?
 }
 
+struct NetworkSocketCounter: Equatable {
+    let id: String
+    let pid: Int32
+    let name: String
+    let bytesIn: UInt64
+    let bytesOut: UInt64
+}
+
 final class ProcessMonitor {
 
     private(set) var cachedTopCPU: [TopProcess] = []
@@ -34,15 +42,21 @@ final class ProcessMonitor {
     private let iconCacheLock = NSLock()
     private var samplingInterval: TimeInterval = 1.0
     private var activeRanking: StatusItemType?
+    private var previousNetworkSockets: [String: NetworkSocketCounter] = [:]
+    private var previousNetworkSampleDate: Date?
 
     func start(interval: TimeInterval = 1.0) {
-        // top/nettop 需要约一秒产生相邻采样差值，低于一秒时保持连续采样但不重叠启动进程。
+        // CPU 的 top 与网络累计值都需要相邻快照；低于一秒时保持每秒采样，避免无意义的重叠任务。
         samplingInterval = max(1.0, interval)
         restartActiveSampling()
     }
 
     func activate(_ type: StatusItemType) {
         guard type == .cpu || type == .memory || type == .network else { return }
+        if type == .network, activeRanking != .network {
+            previousNetworkSockets = [:]
+            previousNetworkSampleDate = nil
+        }
         activeRanking = type
         restartActiveSampling()
     }
@@ -186,53 +200,60 @@ final class ProcessMonitor {
         return UInt64(num)
     }
 
-    // MARK: - Network via nettop
+    // MARK: - Network via netstat
 
     private func sampleNetwork() {
-        guard let output = runCommand("/usr/bin/nettop",
-                                      args: ["-P", "-d", "-L", "2", "-J", "bytes_in,bytes_out", "-x"]) else { return }
-
-        // 输出为两轮采样，每轮以表头行 ",bytes_in,bytes_out," 开头（轮之间无空行）；
-        // -d 模式下第二轮是相邻采样间（约 1 秒）的增量，可直接当作 bytes/s
-        let lines = output.components(separatedBy: "\n")
-        var headerCount = 0
-        var deltaStart = -1
-        for (i, line) in lines.enumerated() {
-            if line.hasPrefix(",bytes_in") {
-                headerCount += 1
-                if headerCount == 2 {
-                    deltaStart = i + 1
-                    break
-                }
-            }
+        let protocols = ["tcp", "udp"]
+        let counters = protocols.flatMap { proto -> [NetworkSocketCounter] in
+            guard let output = runCommand("/usr/sbin/netstat", args: ["-anv", "-p", proto]) else { return [] }
+            return parseNetstatNetworkSockets(output)
         }
-        guard deltaStart >= 0 else { return }
+        guard !counters.isEmpty else { return }
 
-        var results: [(pid: Int32, name: String, bytesIn: UInt64, bytesOut: UInt64)] = []
-
-        for line in lines[deltaStart...] {
-            let cols = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard cols.count >= 3 else { continue }
-
-            // 进程列格式为 name.pid，进程名本身可能含点号，取最后一个点号后的 pid
-            let namePid = String(cols[0])
-            guard let lastDot = namePid.lastIndex(of: ".") else { continue }
-            let name = String(namePid[..<lastDot])
-            let pidStr = String(namePid[namePid.index(after: lastDot)...])
-            guard let pid = Int32(pidStr) else { continue }
-
-            let bytesIn = UInt64(cols[1].trimmingCharacters(in: .whitespaces)) ?? 0
-            let bytesOut = UInt64(cols[2].trimmingCharacters(in: .whitespaces)) ?? 0
-
-            if bytesIn > 0 || bytesOut > 0 {
-                results.append((pid, name, bytesIn, bytesOut))
-            }
+        let now = Date()
+        let currentSockets = Dictionary(counters.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        guard let previousDate = previousNetworkSampleDate else {
+            previousNetworkSockets = currentSockets
+            previousNetworkSampleDate = now
+            return
         }
 
-        let netTop = results
+        struct ProcessDelta {
+            var name: String
+            var bytesIn: UInt64 = 0
+            var bytesOut: UInt64 = 0
+        }
+
+        var deltas: [Int32: ProcessDelta] = [:]
+        for counter in counters {
+            let previous = previousNetworkSockets[counter.id]
+            let bytesIn = previous.map { counter.bytesIn >= $0.bytesIn ? counter.bytesIn - $0.bytesIn : counter.bytesIn } ?? counter.bytesIn
+            let bytesOut = previous.map { counter.bytesOut >= $0.bytesOut ? counter.bytesOut - $0.bytesOut : counter.bytesOut } ?? counter.bytesOut
+            guard bytesIn > 0 || bytesOut > 0 else { continue }
+
+            var delta = deltas[counter.pid] ?? ProcessDelta(name: counter.name)
+            delta.bytesIn += bytesIn
+            delta.bytesOut += bytesOut
+            deltas[counter.pid] = delta
+        }
+
+        previousNetworkSockets = currentSockets
+        previousNetworkSampleDate = now
+
+        let elapsed = max(0.1, now.timeIntervalSince(previousDate))
+        let netTop = deltas.map { pid, delta in
+            let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? delta.name
+            return NetworkProcess(
+                pid: pid,
+                name: name,
+                bytesIn: UInt64(Double(delta.bytesIn) / elapsed),
+                bytesOut: UInt64(Double(delta.bytesOut) / elapsed),
+                icon: appIcon(for: pid)
+            )
+        }
             .sorted { ($0.bytesIn + $0.bytesOut) > ($1.bytesIn + $1.bytesOut) }
             .prefix(5)
-            .map { NetworkProcess(pid: $0.pid, name: $0.name, bytesIn: $0.bytesIn, bytesOut: $0.bytesOut, icon: appIcon(for: $0.pid)) }
+            .map { $0 }
 
         DispatchQueue.main.async { [weak self] in
             self?.cachedTopNetwork = netTop
@@ -261,6 +282,41 @@ final class ProcessMonitor {
             iconCacheLock.unlock()
         }
         return icon
+    }
+}
+
+func parseNetstatNetworkSockets(_ output: String) -> [NetworkSocketCounter] {
+    output.components(separatedBy: .newlines).compactMap { line in
+        guard line.hasPrefix("tcp") || line.hasPrefix("udp") else { return nil }
+        let columns = line.split(whereSeparator: { $0.isWhitespace })
+        // process:pid 后固定还有 state/options/gencnt/flags/flags1/usecnt/rtncnt/fltrs 八列。
+        guard columns.count >= 18 else { return nil }
+        let processPIDIndex = columns.count - 9
+
+        // UDP 的累计字节从第 6 列开始；TCP 在它前面多一列连接状态。
+        let candidateRXIndex = 5
+        let rxIndex = UInt64(columns[candidateRXIndex]) == nil ? candidateRXIndex + 1 : candidateRXIndex
+        let processNameStart = rxIndex + 4
+        guard processNameStart <= processPIDIndex,
+              let bytesIn = UInt64(columns[rxIndex]),
+              let bytesOut = UInt64(columns[rxIndex + 1]) else { return nil }
+
+        let processField = columns[processNameStart...processPIDIndex].joined(separator: " ")
+        guard let colon = processField.lastIndex(of: ":"),
+              let pid = Int32(processField[processField.index(after: colon)...]) else { return nil }
+
+        let name = String(processField[..<colon])
+        let proto = String(columns[0])
+        let generation = String(columns[processPIDIndex + 3])
+        guard !name.isEmpty, !generation.isEmpty else { return nil }
+
+        return NetworkSocketCounter(
+            id: "\(proto)|\(pid)|\(generation)",
+            pid: pid,
+            name: name,
+            bytesIn: bytesIn,
+            bytesOut: bytesOut
+        )
     }
 }
 
