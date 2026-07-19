@@ -11,6 +11,7 @@ final class AppCoordinator {
         tokenUsageMonitor: tokenUsageMonitor
     )
     private let prefs = AppPreferences.shared
+    private var activeMonitorInterval: TimeInterval?
 
     func start() {
         monitorManager.onCPUUpdate = { [weak self] metric in
@@ -29,7 +30,19 @@ final class AppCoordinator {
             }
             .store(in: &subscriptions)
         statusBarController.setup()
-        monitorManager.start(interval: prefs.monitorInterval)
+        let monitorInterval = prefs.monitorInterval
+        activeMonitorInterval = monitorInterval
+        monitorManager.start(interval: monitorInterval)
+        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let interval = self.prefs.monitorInterval
+                guard interval != self.activeMonitorInterval else { return }
+                self.activeMonitorInterval = interval
+                self.monitorManager.updateInterval(interval)
+            }
+            .store(in: &subscriptions)
         tokenUsageMonitor.start(interval: prefs.tokenRefreshInterval)
         providerQuotaMonitor.start()
 

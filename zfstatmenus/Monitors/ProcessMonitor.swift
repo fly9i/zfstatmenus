@@ -27,20 +27,24 @@ final class ProcessMonitor {
 
     private var cpuMemTimer: DispatchSourceTimer?
     private var netTimer: DispatchSourceTimer?
-    private let queue = DispatchQueue(label: "com.zfstat.procmon", qos: .utility)
+    // top 与 nettop 都需要约一秒完成采样。分开队列，避免其中一个排行阻塞另一个。
+    private let cpuMemQueue = DispatchQueue(label: "com.zfstat.procmon.cpu-memory", qos: .utility)
+    private let networkQueue = DispatchQueue(label: "com.zfstat.procmon.network", qos: .utility)
     private var iconCache: [Int32: NSImage] = [:]
+    private let iconCacheLock = NSLock()
 
-    func start() {
+    func start(interval: TimeInterval = 1.0) {
         stop()
+        let samplingInterval = max(1.0, interval)
 
-        let t1 = DispatchSource.makeTimerSource(queue: queue)
-        t1.schedule(deadline: .now() + 1, repeating: 3.0)
+        let t1 = DispatchSource.makeTimerSource(queue: cpuMemQueue)
+        t1.schedule(deadline: .now(), repeating: samplingInterval)
         t1.setEventHandler { [weak self] in self?.sampleCPUMem() }
         t1.resume()
         cpuMemTimer = t1
 
-        let t2 = DispatchSource.makeTimerSource(queue: queue)
-        t2.schedule(deadline: .now() + 2, repeating: 5.0)
+        let t2 = DispatchSource.makeTimerSource(queue: networkQueue)
+        t2.schedule(deadline: .now(), repeating: samplingInterval)
         t2.setEventHandler { [weak self] in self?.sampleNetwork() }
         t2.resume()
         netTimer = t2
@@ -207,11 +211,17 @@ final class ProcessMonitor {
     }
 
     private func appIcon(for pid: Int32) -> NSImage? {
-        if let cached = iconCache[pid] { return cached }
+        iconCacheLock.lock()
+        let cached = iconCache[pid]
+        iconCacheLock.unlock()
+        if let cached { return cached }
+
         let app = NSRunningApplication(processIdentifier: pid)
         let icon = app?.icon
         if let icon = icon {
+            iconCacheLock.lock()
             iconCache[pid] = icon
+            iconCacheLock.unlock()
         }
         return icon
     }

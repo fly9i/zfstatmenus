@@ -35,7 +35,7 @@ final class MonitorManager {
         }
         t.resume()
         timer = t
-        processMonitor.start()
+        processMonitor.start(interval: interval)
         AppLog.monitor.info("MonitorManager started, interval=\(interval)s")
     }
 
