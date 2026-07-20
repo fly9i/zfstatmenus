@@ -187,10 +187,17 @@ struct DeviceTokenUsageSummary: Equatable, Identifiable {
     }
 }
 
-func estimateAPICost(for usages: [ModelTokenUsage]) -> TokenCostEstimate {
+func estimateAPICost(
+    for usages: [ModelTokenUsage],
+    pricingOverrides: ModelPricingOverrideStore = .shared
+) -> TokenCostEstimate {
     usages.reduce(into: TokenCostEstimate()) { estimate, usage in
         guard usage.tokens.totalTokens > 0 else { return }
-        guard let pricing = ModelPricingCatalog.pricing(provider: usage.provider, model: usage.model) else {
+        guard let pricing = ModelPricingCatalog.pricing(
+            provider: usage.provider,
+            model: usage.model,
+            overrides: pricingOverrides
+        ) else {
             estimate.unpricedTokens += usage.tokens.totalTokens
             estimate.unpricedModels.insert(usage.displayName)
             return
@@ -205,7 +212,7 @@ func estimateAPICost(for usages: [ModelTokenUsage]) -> TokenCostEstimate {
     }
 }
 
-private struct ModelPricing {
+struct ModelPricing: Codable, Equatable {
     let currency: TokenPriceCurrency
     let input: Double
     let cachedInput: Double
@@ -221,11 +228,106 @@ private struct ModelPricing {
     }
 }
 
+struct ModelPricingOverride: Codable, Equatable {
+    let provider: String
+    let model: String
+    let currency: TokenPriceCurrency
+    let inputPerMtok: Double
+    let cachedInputPerMtok: Double
+    let cacheWritePerMtok: Double
+    let outputPerMtok: Double
+
+    var pricing: ModelPricing {
+        ModelPricing(
+            currency: currency,
+            input: inputPerMtok,
+            cachedInput: cachedInputPerMtok,
+            cacheWrite: cacheWritePerMtok,
+            output: outputPerMtok
+        )
+    }
+}
+
+final class ModelPricingOverrideStore: @unchecked Sendable {
+    static let shared = ModelPricingOverrideStore()
+
+    private struct Cache: Codable {
+        let identity: String
+        let pricing: [ModelPricingOverride]
+    }
+
+    static let defaultsKey = "tokenRemoteModelPricing"
+    private let defaults: UserDefaults
+    private let defaultsKey: String
+    private let lock = NSLock()
+    private var activeIdentity: String?
+    private var pricingByKey: [String: ModelPricing] = [:]
+
+    init(defaults: UserDefaults = .standard, defaultsKey: String = ModelPricingOverrideStore.defaultsKey) {
+        self.defaults = defaults
+        self.defaultsKey = defaultsKey
+    }
+
+    func activate(identity: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeIdentity = identity
+        guard let data = defaults.data(forKey: defaultsKey),
+              let cache = try? JSONDecoder().decode(Cache.self, from: data),
+              cache.identity == identity else {
+            pricingByKey = [:]
+            return
+        }
+        pricingByKey = Self.makeLookup(cache.pricing)
+    }
+
+    func replace(_ pricing: [ModelPricingOverride], identity: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeIdentity = identity
+        pricingByKey = Self.makeLookup(pricing)
+        if let data = try? JSONEncoder().encode(Cache(identity: identity, pricing: pricing)) {
+            defaults.set(data, forKey: defaultsKey)
+        }
+    }
+
+    func deactivate() {
+        lock.lock()
+        activeIdentity = nil
+        pricingByKey = [:]
+        lock.unlock()
+    }
+
+    func pricing(provider: String, model: String) -> ModelPricing? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeIdentity != nil else { return nil }
+        return pricingByKey[Self.key(provider: provider, model: model)]
+    }
+
+    private static func makeLookup(_ pricing: [ModelPricingOverride]) -> [String: ModelPricing] {
+        Dictionary(pricing.map { (key(provider: $0.provider, model: $0.model), $0.pricing) },
+                   uniquingKeysWith: { _, latest in latest })
+    }
+
+    private static func key(provider: String, model: String) -> String {
+        "\(provider.lowercased())|\(model.lowercased())"
+    }
+}
+
 private enum ModelPricingCatalog {
     // 标准公开 API 单价，最后核对日期：2026-07-16。官方来源见 README。
-    static func pricing(provider rawProvider: String, model rawModel: String) -> ModelPricing? {
+    static func pricing(
+        provider rawProvider: String,
+        model rawModel: String,
+        overrides: ModelPricingOverrideStore
+    ) -> ModelPricing? {
         let provider = rawProvider.lowercased()
         let model = rawModel.lowercased()
+
+        if let override = overrides.pricing(provider: provider, model: model) {
+            return override
+        }
 
         // provider 是采集来源，不代表模型厂商。同名已知模型始终使用其第一方公开价格。
         if model == "gpt-5.6-sol-pro" || model.hasPrefix("gpt-5.6-sol-pro-") {

@@ -174,6 +174,65 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertEqual(estimate.unpricedTokens, 0)
     }
 
+    func testRemotePricingOverridesBuiltinPricingAndPersistsForSameIdentity() throws {
+        let suiteName = "TokenUsageTests.Pricing.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let key = "pricing"
+        let store = ModelPricingOverrideStore(defaults: defaults, defaultsKey: key)
+        let remote = ModelPricingOverride(
+            provider: "OpenAI",
+            model: "GPT-5.5",
+            currency: .usd,
+            inputPerMtok: 9,
+            cachedInputPerMtok: 0.9,
+            cacheWritePerMtok: 11,
+            outputPerMtok: 45
+        )
+
+        store.replace([remote], identity: "account-a")
+        XCTAssertEqual(store.pricing(provider: "openai", model: "gpt-5.5"), remote.pricing)
+
+        let estimate = estimateAPICost(
+            for: [
+                ModelTokenUsage(
+                    source: .codex,
+                    provider: "OPENAI",
+                    model: "GPT-5.5",
+                    tokens: TokenBreakdown(input: 1_000_000, output: 1_000_000)
+                )
+            ],
+            pricingOverrides: store
+        )
+        XCTAssertEqual(estimate.nativeUSD, 54, accuracy: 0.0001)
+
+        let reloaded = ModelPricingOverrideStore(defaults: defaults, defaultsKey: key)
+        reloaded.activate(identity: "account-a")
+        XCTAssertEqual(reloaded.pricing(provider: "OPENAI", model: "GPT-5.5"), remote.pricing)
+    }
+
+    func testRemotePricingDoesNotLeakAcrossAccounts() throws {
+        let suiteName = "TokenUsageTests.Pricing.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = ModelPricingOverrideStore(defaults: defaults, defaultsKey: "pricing")
+        store.replace([
+            ModelPricingOverride(
+                provider: "openai",
+                model: "gpt-5.5",
+                currency: .cny,
+                inputPerMtok: 1,
+                cachedInputPerMtok: 2,
+                cacheWritePerMtok: 3,
+                outputPerMtok: 4
+            )
+        ], identity: "account-a")
+
+        store.activate(identity: "account-b")
+
+        XCTAssertNil(store.pricing(provider: "openai", model: "gpt-5.5"))
+    }
+
     func testMixedCurrencyConversionAndUnknownModel() {
         let glm = ModelTokenUsage(
             source: .opencode,

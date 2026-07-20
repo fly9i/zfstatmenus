@@ -77,6 +77,10 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
             : .disabled
         status = initialStatus
         currentStatus = initialStatus
+        if AppPreferences.shared.tokenSyncEnabled,
+           let configuration = try? loadConfiguration() {
+            ModelPricingOverrideStore.shared.activate(identity: Self.configurationIdentity(configuration))
+        }
     }
 
     var hasStoredToken: Bool {
@@ -114,8 +118,12 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
             guard let self else { return }
             resetRetryState()
             if !enabled {
+                ModelPricingOverrideStore.shared.deactivate()
                 publish(.disabled)
                 return
+            }
+            if let configuration = try? loadConfiguration() {
+                ModelPricingOverrideStore.shared.activate(identity: Self.configurationIdentity(configuration))
             }
             publish(TokenSyncStatus(phase: .pending, message: "等待同步", pendingDays: 0, lastSuccessAt: nil))
             if let latestStore {
@@ -127,7 +135,10 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
     func clearToken() throws {
         try KeychainStore.deleteToken()
         AppPreferences.shared.tokenSyncEnabled = false
-        queue.async { [weak self] in self?.publish(.disabled) }
+        queue.async { [weak self] in
+            ModelPricingOverrideStore.shared.deactivate()
+            self?.publish(.disabled)
+        }
     }
 
     func markDirty(days: Set<String>) {
@@ -238,6 +249,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
             let configuration = try loadConfiguration()
             let sqliteStore = try TokenSyncSQLiteStore()
             let identity = Self.configurationIdentity(configuration)
+            ModelPricingOverrideStore.shared.activate(identity: identity)
             try sqliteStore.prepareIdentity(identity, allDays: Set(localStore.daily.keys))
             let pending = try sqliteStore.pendingDays()
 
@@ -274,6 +286,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
                     self.queue.async {
                         self.finishSync(
                             result: result,
+                            pricingIdentity: identity,
                             completion: completion
                         )
                     }
@@ -296,6 +309,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
 
     private func finishSync(
         result: TokenSyncHTTPResult,
+        pricingIdentity: String,
         completion: (([String: [String: ModelTokenUsage]]) -> Void)?
     ) {
         do {
@@ -303,6 +317,7 @@ final class TokenSyncService: ObservableObject, @unchecked Sendable {
             try sqliteStore.clearAccepted(result.accepted)
             try sqliteStore.replaceRemote(rows: result.remoteRows)
             try sqliteStore.setLastSuccessAt(Date())
+            ModelPricingOverrideStore.shared.replace(result.remotePricing, identity: pricingIdentity)
             let remote = try sqliteStore.remoteDaily()
             let pendingCount = try sqliteStore.pendingDays().count
 
@@ -496,6 +511,10 @@ private struct TokenSyncSnapshotResponse: Decodable {
     let rows: [RemoteTokenUsageRow]
 }
 
+private struct TokenSyncPricingResponse: Decodable {
+    let pricing: [ModelPricingOverride]
+}
+
 private struct TokenSyncMeResponse: Decodable {
     let user: User
 
@@ -516,6 +535,7 @@ private struct TokenSyncAPIErrorResponse: Decodable {
 private struct TokenSyncHTTPResult {
     let accepted: [TokenSyncResponse.Accepted]
     let remoteRows: [RemoteTokenUsageRow]
+    let remotePricing: [ModelPricingOverride]
 }
 
 private struct TokenSyncHTTPClient {
@@ -562,9 +582,18 @@ private struct TokenSyncHTTPClient {
         var snapshotRequest = URLRequest(url: snapshotURL)
         snapshotRequest.httpMethod = "GET"
         applyAuthorization(to: &snapshotRequest)
-        let snapshot: TokenSyncSnapshotResponse = try await send(snapshotRequest)
+        let authorizedSnapshotRequest = snapshotRequest
+        let pricingRequest = try authorizedRequest(path: "v1/pricing", method: "GET")
 
-        return TokenSyncHTTPResult(accepted: accepted, remoteRows: snapshot.rows)
+        async let snapshot: TokenSyncSnapshotResponse = send(authorizedSnapshotRequest)
+        async let pricing: TokenSyncPricingResponse = send(pricingRequest)
+        let (snapshotResponse, pricingResponse) = try await (snapshot, pricing)
+
+        return TokenSyncHTTPResult(
+            accepted: accepted,
+            remoteRows: snapshotResponse.rows,
+            remotePricing: pricingResponse.pricing
+        )
     }
 
     private func authorizedRequest(path: String, method: String) throws -> URLRequest {
