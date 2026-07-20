@@ -6,6 +6,7 @@ final class AppCoordinator {
     private let monitorManager = MonitorManager()
     private let tokenUsageMonitor = TokenUsageMonitor.shared
     private let providerQuotaMonitor = ProviderQuotaMonitor.shared
+    private let exchangeRateMonitor = ExchangeRateMonitor.shared
     private lazy var statusBarController = StatusBarController(
         monitorManager: monitorManager,
         tokenUsageMonitor: tokenUsageMonitor
@@ -45,6 +46,7 @@ final class AppCoordinator {
             .store(in: &subscriptions)
         tokenUsageMonitor.start(interval: prefs.tokenRefreshInterval)
         providerQuotaMonitor.start()
+        exchangeRateMonitor.start()
 
         AppLog.general.info("AppCoordinator started")
     }
@@ -53,6 +55,7 @@ final class AppCoordinator {
         monitorManager.stop()
         tokenUsageMonitor.stop()
         providerQuotaMonitor.stop()
+        exchangeRateMonitor.stop()
     }
 
     private var subscriptions: Set<AnyCancellable> = []

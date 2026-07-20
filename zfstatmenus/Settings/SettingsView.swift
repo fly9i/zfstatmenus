@@ -360,9 +360,11 @@ private struct StatusItemToggle: View {
 
 struct TokenSettingsView: View {
     @ObservedObject private var tokenUsageMonitor = TokenUsageMonitor.shared
+    @ObservedObject private var exchangeRateMonitor = ExchangeRateMonitor.shared
     @AppStorage("tokenRefreshInterval") private var tokenRefreshInterval = 60.0
     @AppStorage("tokenDisplayCurrency") private var currency = "both"
     @AppStorage("tokenUSDToCNYRate") private var usdToCNYRate = 7.2
+    @AppStorage("tokenRateAutoEnabled") private var rateAutoEnabled = true
     @State private var openCodeEnabled = true
     @State private var zcodeEnabled = true
     @State private var codexEnabled = true
@@ -459,11 +461,31 @@ struct TokenSettingsView: View {
                     .frame(width: 150)
                 }
                 SettingsDivider()
-                SettingsRow(title: "USD/CNY 汇率", detail: "仅用于把美元价格换算为人民币") {
-                    TextField("7.20", value: $usdToCNYRate, format: .number.precision(.fractionLength(2...4)))
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 90)
+                SettingsRow(title: "自动获取汇率", detail: rateAutoDetail) {
+                    Toggle("", isOn: $rateAutoEnabled).labelsHidden().toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(title: "USD/CNY 汇率", detail: rateAutoEnabled ? "由自动获取维护，可手动刷新" : "仅用于把美元价格换算为人民币") {
+                    HStack(spacing: 8) {
+                        if rateAutoEnabled {
+                            if exchangeRateMonitor.isFetching {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button {
+                                    exchangeRateMonitor.refresh()
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("立即刷新汇率")
+                            }
+                        }
+                        TextField("7.20", value: $usdToCNYRate, format: .number.precision(.fractionLength(2...4)))
+                            .multilineTextAlignment(.trailing)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 90)
+                            .disabled(rateAutoEnabled)
+                    }
                 }
             }
 
@@ -517,6 +539,9 @@ struct TokenSettingsView: View {
         .onChange(of: glmRegion) { region in
             AppPreferences.shared.glmAPIRegion = region
             ProviderQuotaMonitor.shared.refresh()
+        }
+        .onChange(of: rateAutoEnabled) { enabled in
+            if enabled { exchangeRateMonitor.refresh() }
         }
         .alert("重新计算 Token 用量？", isPresented: $showRecalculateConfirmation) {
             Button("取消", role: .cancel) {}
@@ -610,6 +635,18 @@ struct TokenSettingsView: View {
                 recalculationFeedback = "重算未应用，部分来源读取失败：\(errors.joined(separator: "；"))"
             }
         }
+    }
+
+    private var rateAutoDetail: String {
+        if !rateAutoEnabled { return "关闭后可手动设置汇率" }
+        if exchangeRateMonitor.isFetching { return "正在获取最新汇率…" }
+        let updatedAt = AppPreferences.shared.tokenRateUpdatedAt
+        if updatedAt > 0 {
+            let date = Date(timeIntervalSince1970: updatedAt)
+            return "上次更新 \(date.formatted(date: .abbreviated, time: .shortened))"
+        }
+        if exchangeRateMonitor.lastError != nil { return "获取失败，暂用上次汇率" }
+        return "启动后自动获取并定期刷新"
     }
 }
 

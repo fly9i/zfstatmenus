@@ -39,6 +39,8 @@
 - 历史视图：今日、过去 7 天、过去 30 天、近一年热力图和来源/模型明细。
 - 本地 SQLite 缓存：增量采集，避免每次刷新重新扫描全部历史。
 - 可选多设备同步：本地优先、断网补传、按用户隔离，支持多台 Mac 汇总。
+- 同步面板：部署后访问 Worker 根路径即可在浏览器查看汇总；内置与客户端一致的价格目录，也可在线覆盖各模型单价（含未定价模型）。
+- 自动汇率：启动后自动获取 USD/CNY 汇率用于费用换算，也可在设置中手动覆盖。
 - 原生设置页：状态栏栏目、数据源、刷新间隔、汇率和同步配置。
 
 ## 数据来源
@@ -210,7 +212,7 @@ Token 缓存数据库：
 
 ## API 费用说明
 
-费用是公开标准 API 单价的等价估算，不代表 Codex、Claude Code、Coding Plan 等订阅产品的实际账单。价格集中维护在 `zfstatmenus/Models/TokenUsage.swift` 的 `ModelPricingCatalog`。
+费用是公开标准 API 单价的等价估算，不代表 Codex、Claude Code、Coding Plan 等订阅产品的实际账单。价格集中维护在 `zfstatmenus/Models/TokenUsage.swift` 的 `ModelPricingCatalog`，Worker 侧在 `server/src/pricing.ts` 保留同步副本作为默认定价（面板中的自定义定价优先于内置价格），更新价格时两侧需一起修改。
 
 估算不包含订阅费、长上下文阶梯、Batch/Priority、工具调用、地区差异和促销。更新价格时应优先核对模型厂商官方页面并同步测试。
 

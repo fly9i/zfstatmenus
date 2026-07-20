@@ -12,6 +12,8 @@ enum PrefKey: String {
     case showValueText = "showValueText"
     case tokenDisplayCurrency = "tokenDisplayCurrency"
     case tokenUSDToCNYRate = "tokenUSDToCNYRate"
+    case tokenRateAutoEnabled = "tokenRateAutoEnabled"
+    case tokenRateUpdatedAt = "tokenRateUpdatedAt"
     case tokenStatusItemIntroduced = "tokenStatusItemIntroduced"
     case tokenZCodeSourceIntroduced = "tokenZCodeSourceIntroduced"
     case tokenKimiSourceIntroduced = "tokenKimiSourceIntroduced"
@@ -45,6 +47,8 @@ final class AppPreferences {
             PrefKey.showValueText.rawValue: true,
             PrefKey.tokenDisplayCurrency.rawValue: "both",
             PrefKey.tokenUSDToCNYRate.rawValue: 7.2,
+            PrefKey.tokenRateAutoEnabled.rawValue: true,
+            PrefKey.tokenRateUpdatedAt.rawValue: 0.0,
             PrefKey.tokenSyncEnabled.rawValue: false,
             PrefKey.tokenSyncServerURL.rawValue: "",
             PrefKey.tokenSyncDeviceID.rawValue: "",
@@ -137,6 +141,16 @@ final class AppPreferences {
     var tokenUSDToCNYRate: Double {
         get { max(defaults.double(forKey: PrefKey.tokenUSDToCNYRate.rawValue), 0.01) }
         set { defaults.set(max(newValue, 0.01), forKey: PrefKey.tokenUSDToCNYRate.rawValue) }
+    }
+
+    var tokenRateAutoEnabled: Bool {
+        get { defaults.bool(forKey: PrefKey.tokenRateAutoEnabled.rawValue) }
+        set { defaults.set(newValue, forKey: PrefKey.tokenRateAutoEnabled.rawValue) }
+    }
+
+    var tokenRateUpdatedAt: TimeInterval {
+        get { defaults.double(forKey: PrefKey.tokenRateUpdatedAt.rawValue) }
+        set { defaults.set(newValue, forKey: PrefKey.tokenRateUpdatedAt.rawValue) }
     }
 
     var enabledTokenSources: Set<TokenSource> {

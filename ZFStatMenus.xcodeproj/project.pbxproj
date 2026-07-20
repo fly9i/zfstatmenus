@@ -32,6 +32,7 @@
 		B66F559370FE0289E44E11F9 /* MonitorManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C824BB03BF35E97BB3DD5105 /* MonitorManager.swift */; };
 		B7E5FACC3743C25190CED125 /* TokenUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EF34ED56E6B452EA345CC41 /* TokenUsageTests.swift */; };
 		D2544EE686E5AE6D95C7A0FE /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E745AC8BD0EF46A5ECA2E1C5 /* SettingsView.swift */; };
+		DA578C2005CC04AD1A8C3C09 /* ExchangeRateMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3027934D3AE6954026EABFF5 /* ExchangeRateMonitor.swift */; };
 		EA0CD7EC91D735868C2D85EC /* Metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95B51BB31A91AD7CD3D90BEA /* Metrics.swift */; };
 		EBDAAAD2BFB5A0900540E92A /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 966A8936E2EF333AC9F94735 /* AppTheme.swift */; };
 		F07D122CA12BCB82C65A5BAE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7E8B871E5E76FC70B3F984D8 /* Assets.xcassets */; };
@@ -54,6 +55,7 @@
 		1D0CDD0CECEB6C95E9E59282 /* TokenUsageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenUsageStore.swift; sourceTree = "<group>"; };
 		2A6EAED04456484EE096FE7B /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		2E1E5A4F064BD2B75C77DF36 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		3027934D3AE6954026EABFF5 /* ExchangeRateMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExchangeRateMonitor.swift; sourceTree = "<group>"; };
 		3146B90EF2363FE04BE5559D /* ZFStatMenusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZFStatMenusApp.swift; sourceTree = "<group>"; };
 		33E07F8EE13CB6C077AB409D /* ProviderQuota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderQuota.swift; sourceTree = "<group>"; };
 		3EF34ED56E6B452EA345CC41 /* TokenUsageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenUsageTests.swift; sourceTree = "<group>"; };
@@ -164,6 +166,7 @@
 		425DF94FD2071BFF443507AC /* TokenTracker */ = {
 			isa = PBXGroup;
 			children = (
+				3027934D3AE6954026EABFF5 /* ExchangeRateMonitor.swift */,
 				924F75724A0D24BC06A3382B /* ProviderQuotaMonitor.swift */,
 				9248F52CC4266CA8AE26C1F5 /* TokenSyncService.swift */,
 				0C81528A33EA4FA28AAB91D4 /* TokenUsageMonitor.swift */,
@@ -345,6 +348,7 @@
 				F7779C9E773DDCF19ED9732C /* AppPreferences.swift in Sources */,
 				EBDAAAD2BFB5A0900540E92A /* AppTheme.swift in Sources */,
 				65736CE95514DFE7B038B22A /* CPUMonitor.swift in Sources */,
+				DA578C2005CC04AD1A8C3C09 /* ExchangeRateMonitor.swift in Sources */,
 				7648A5B5B8C2882627C11010 /* Logger.swift in Sources */,
 				A28A8BB489D7C296BE4F7EB5 /* MemoryMonitor.swift in Sources */,
 				EA0CD7EC91D735868C2D85EC /* Metrics.swift in Sources */,

@@ -1029,6 +1029,7 @@ private enum TokenShareSnapshotRenderer {
 
 private enum TokenListLayout {
     static let tokenWidth: CGFloat = 70
+    static let breakdownWidth: CGFloat = 60
     static let usdWidth: CGFloat = 68
     static let cnyWidth: CGFloat = 78
     static let columnSpacing: CGFloat = 8
@@ -1526,6 +1527,10 @@ private struct HeatmapHoverDetail: View {
         estimateAPICost(for: day.modelUsages)
     }
 
+    private var dayTokens: TokenBreakdown {
+        day.modelUsages.reduce(into: TokenBreakdown()) { $0 += $1.tokens }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
@@ -1537,6 +1542,10 @@ private struct HeatmapHoverDetail: View {
                         .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+                HeatmapBreakdownCell(text: formatTokenCount(dayTokens.input))
+                HeatmapBreakdownCell(text: formatTokenCount(dayTokens.cachedInput))
+                HeatmapBreakdownCell(text: formatTokenCount(dayTokens.output + dayTokens.reasoning))
 
                 Text(formatTokenCount(day.totalTokens))
                     .font(.system(.caption, design: .monospaced))
@@ -1562,6 +1571,8 @@ private struct HeatmapHoverDetail: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
             } else {
+                HeatmapColumnHeader(currency: currency)
+
                 ForEach(Array(modelUsages.prefix(5))) { usage in
                     HeatmapModelCostRow(
                         usage: usage,
@@ -1591,6 +1602,8 @@ private struct HeatmapModelCostRow: View {
     let currency: String
     let usdToCNYRate: Double
 
+    private var tokens: TokenBreakdown { usage.tokens }
+
     var body: some View {
         HStack(spacing: 12) {
             HStack(spacing: 6) {
@@ -1607,6 +1620,10 @@ private struct HeatmapModelCostRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
 
+            HeatmapBreakdownCell(text: formatTokenCount(tokens.input))
+            HeatmapBreakdownCell(text: formatTokenCount(tokens.cachedInput))
+            HeatmapBreakdownCell(text: formatTokenCount(tokens.output + tokens.reasoning))
+
             Text(formatTokenCount(usage.tokens.totalTokens))
                 .font(.system(.caption, design: .monospaced))
                 .foregroundColor(.secondary)
@@ -1621,12 +1638,47 @@ private struct HeatmapModelCostRow: View {
         }
         .font(.caption)
         .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .help(usage.channelDetails)
+        .padding(.vertical, 5)
+        .help("\(usage.channelDetails)\n输入 \(formatTokenCount(tokens.input)) · 缓存读取 \(formatTokenCount(tokens.cachedInput)) · 缓存写入 \(formatTokenCount(tokens.cacheWrite)) · 输出/推理 \(formatTokenCount(tokens.output + tokens.reasoning))")
     }
 
     private var sourceColor: Color {
         AppTheme.accent
+    }
+}
+
+private struct HeatmapBreakdownCell: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundColor(.secondary)
+            .frame(width: TokenListLayout.breakdownWidth, alignment: .trailing)
+    }
+}
+
+private struct HeatmapColumnHeader: View {
+    let currency: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("模型")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("输入")
+                .frame(width: TokenListLayout.breakdownWidth, alignment: .trailing)
+            Text("缓存")
+                .frame(width: TokenListLayout.breakdownWidth, alignment: .trailing)
+            Text("输出")
+                .frame(width: TokenListLayout.breakdownWidth, alignment: .trailing)
+            Text("总量")
+                .frame(width: TokenListLayout.tokenWidth, alignment: .trailing)
+            TokenCurrencyHeader(currency: currency)
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
     }
 }
 

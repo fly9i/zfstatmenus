@@ -14,7 +14,10 @@
 - 多设备同步：`zfstatmenus/TokenTracker/TokenSyncService.swift`
 - 订阅额度采集：`zfstatmenus/TokenTracker/ProviderQuotaMonitor.swift`
 - 订阅额度模型与解析：`zfstatmenus/Models/ProviderQuota.swift`
+- 自动汇率：`zfstatmenus/TokenTracker/ExchangeRateMonitor.swift`
 - Worker：`server/src/index.ts`
+- Worker 内置默认定价目录：`server/src/pricing.ts`（与 `ModelPricingCatalog` 保持一致，面板自定义定价优先）
+- 同步面板页面：`server/src/dashboard.ts`
 - D1 迁移：`server/migrations/`
 
 ## 通用规则
