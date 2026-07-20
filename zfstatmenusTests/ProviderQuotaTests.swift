@@ -102,48 +102,6 @@ final class ProviderQuotaTests: XCTestCase {
         XCTAssertNil(parseClaudeOAuthCredential(Data("not json".utf8)))
     }
 
-    func testClaudeRefreshResponseRotatesTokensAndPreservesMetadata() throws {
-        let original = Data("""
-        {"installId": "keep-me", "claudeAiOauth": {
-          "accessToken": "access-old", "refreshToken": "refresh-old",
-          "expiresAt": 1000, "scopes": ["old:scope"],
-          "subscriptionType": "max", "rateLimitTier": "default_claude_max_5x"
-        }}
-        """.utf8)
-        let response = Data("""
-        {"access_token":"access-new", "refresh_token":"refresh-new",
-         "expires_in":900, "scope":"user:inference user:profile", "token_type":"Bearer"}
-        """.utf8)
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-
-        let updatedData = try XCTUnwrap(updateClaudeOAuthCredential(original, with: response, now: now))
-        let object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: updatedData) as? [String: Any]
-        )
-        let oauth = try XCTUnwrap(object["claudeAiOauth"] as? [String: Any])
-
-        XCTAssertEqual(object["installId"] as? String, "keep-me")
-        XCTAssertEqual(oauth["accessToken"] as? String, "access-new")
-        XCTAssertEqual(oauth["refreshToken"] as? String, "refresh-new")
-        XCTAssertEqual(oauth["expiresAt"] as? Int64, 1_800_000_900_000)
-        XCTAssertEqual(oauth["scopes"] as? [String], ["user:inference", "user:profile"])
-        XCTAssertEqual(oauth["subscriptionType"] as? String, "max")
-        XCTAssertEqual(oauth["rateLimitTier"] as? String, "default_claude_max_5x")
-    }
-
-    func testClaudeRefreshResponseRejectsIncompletePayload() {
-        let original = Data(#"{"claudeAiOauth":{"accessToken":"old"}}"#.utf8)
-
-        XCTAssertNil(updateClaudeOAuthCredential(
-            original,
-            with: Data(#"{"access_token":"new","expires_in":900}"#.utf8)
-        ))
-        XCTAssertNil(updateClaudeOAuthCredential(
-            original,
-            with: Data(#"{"access_token":"new","refresh_token":"refresh","expires_in":0}"#.utf8)
-        ))
-    }
-
     // MARK: - Codex
 
     func testCodexMapsWindowsByDurationSeconds() throws {
