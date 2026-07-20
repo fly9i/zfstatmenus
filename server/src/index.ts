@@ -1,10 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
+import { DASHBOARD_HTML } from "./dashboard";
+import { builtinPricing, costForTokens, type ModelPricing, type TokenSums } from "./pricing";
 
 const MAX_REQUEST_BYTES = 1_000_000;
 const MAX_SYNC_DAYS = 31;
 const MAX_USAGES_PER_DAY = 200;
 const MAX_SNAPSHOT_ROWS = 20_000;
+const MAX_STATS_ROWS = 20_000;
+const MAX_STATS_MODELS = 500;
+const MAX_PRICE_PER_MTOK = 1_000_000;
 const ALLOWED_SOURCES = new Set(["opencode", "zcode", "codex", "claude", "kimi"]);
+const ALLOWED_CURRENCIES = new Set(["usd", "cny"]);
 
 type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
 
@@ -86,6 +92,10 @@ export default {
         return json({ ok: true, serverTime: new Date().toISOString() });
       }
 
+      if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/dashboard")) {
+        return html(DASHBOARD_HTML);
+      }
+
       const principal = await authenticate(request, env);
       if (shouldUpdateLastUsed(principal.lastUsedAt)) {
         ctx.waitUntil(
@@ -103,6 +113,14 @@ export default {
         response = await handleSync(request, env, principal);
       } else if (request.method === "GET" && url.pathname === "/v1/snapshot") {
         response = await handleSnapshot(url, env, principal);
+      } else if (request.method === "GET" && url.pathname === "/v1/stats") {
+        response = await handleStats(url, env, principal);
+      } else if (request.method === "GET" && url.pathname === "/v1/pricing") {
+        response = await handlePricingList(env, principal);
+      } else if (request.method === "PUT" && url.pathname === "/v1/pricing") {
+        response = await handlePricingUpsert(request, env, principal);
+      } else if (request.method === "DELETE" && url.pathname === "/v1/pricing") {
+        response = await handlePricingDelete(url, env, principal);
       } else {
         throw new HTTPError(404, "not_found", "接口不存在");
       }
@@ -319,6 +337,277 @@ async function handleSnapshot(url: URL, env: Env, principal: Principal): Promise
   });
 }
 
+const TOKEN_SUM_COLUMNS = `SUM(t.input_tokens) AS inputTokens,
+       SUM(t.cached_input_tokens) AS cachedInputTokens,
+       SUM(t.cache_write_tokens) AS cacheWriteTokens,
+       SUM(t.output_tokens) AS outputTokens,
+       SUM(t.reasoning_tokens) AS reasoningTokens`;
+
+type StatsGranularRow = TokenSums & {
+  day: string;
+  source: string;
+  deviceId: string;
+  deviceName: string;
+  provider: string;
+  model: string;
+};
+
+type UserPricingRow = {
+  provider: string;
+  model: string;
+  currency: string;
+  inputPerMtok: number;
+  cachedInputPerMtok: number;
+  cacheWritePerMtok: number;
+  outputPerMtok: number;
+};
+
+type CostAggregate = TokenSums & {
+  usdCost: number;
+  cnyCost: number;
+};
+
+type ModelAggregate = CostAggregate & {
+  provider: string;
+  model: string;
+  priced: number;
+  priceSource: "user" | "builtin" | null;
+  price: ModelPricing | null;
+};
+
+function emptyAggregate(): CostAggregate {
+  return {
+    inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0,
+    outputTokens: 0, reasoningTokens: 0, usdCost: 0, cnyCost: 0,
+  };
+}
+
+function aggregateTokens(row: TokenSums): number {
+  return row.inputTokens + row.cachedInputTokens + row.cacheWriteTokens
+    + row.outputTokens + row.reasoningTokens;
+}
+
+// 定价优先级：用户自定义（model_pricing 表，精确匹配）> 内置目录（与客户端同步的规则匹配）。
+function resolvePricing(
+  provider: string,
+  model: string,
+  userPricing: ReadonlyMap<string, ModelPricing>,
+): { pricing: ModelPricing; source: "user" | "builtin" } | null {
+  const user = userPricing.get(`${provider.toLowerCase()}|${model.toLowerCase()}`);
+  if (user) return { pricing: user, source: "user" };
+  const builtin = builtinPricing(provider, model);
+  if (builtin) return { pricing: builtin, source: "builtin" };
+  return null;
+}
+
+function splitCost(pricing: ModelPricing | null, row: TokenSums): { usd: number; cny: number } {
+  if (!pricing) return { usd: 0, cny: 0 };
+  const cost = costForTokens(pricing, row);
+  return pricing.currency === "cny" ? { usd: 0, cny: cost } : { usd: cost, cny: 0 };
+}
+
+function accumulate(target: CostAggregate, row: TokenSums, cost: { usd: number; cny: number }): void {
+  target.inputTokens += row.inputTokens;
+  target.cachedInputTokens += row.cachedInputTokens;
+  target.cacheWriteTokens += row.cacheWriteTokens;
+  target.outputTokens += row.outputTokens;
+  target.reasoningTokens += row.reasoningTokens;
+  target.usdCost += cost.usd;
+  target.cnyCost += cost.cny;
+}
+
+// 按 (日期, 来源, 设备, 模型) 粒度查询后在 JS 内聚合：内置目录是规则匹配（前缀/包含），
+// 无法表达为 model_pricing 的精确 JOIN，统一在这里套用 用户定价 > 内置定价 的优先级。
+async function handleStats(url: URL, env: Env, principal: Principal): Promise<Response> {
+  const { from, to } = statsRange(url);
+
+  const [granular, pricingRows] = await Promise.all([
+    env.DB.prepare(
+      `SELECT t.usage_day AS day, t.source AS source, t.device_id AS deviceId, d.name AS deviceName,
+              t.provider AS provider, t.model AS model, ${TOKEN_SUM_COLUMNS}
+         FROM token_usage t
+         JOIN devices d ON d.user_id = t.user_id AND d.id = t.device_id
+        WHERE t.user_id = ? AND t.usage_day BETWEEN ? AND ?
+        GROUP BY t.usage_day, t.source, t.device_id, t.provider, t.model
+        LIMIT ?`,
+    ).bind(principal.userId, from, to, MAX_STATS_ROWS + 1).all<StatsGranularRow>(),
+    env.DB.prepare(
+      `SELECT provider, model, currency,
+              input_per_mtok AS inputPerMtok, cached_input_per_mtok AS cachedInputPerMtok,
+              cache_write_per_mtok AS cacheWritePerMtok, output_per_mtok AS outputPerMtok
+         FROM model_pricing WHERE user_id = ?`,
+    ).bind(principal.userId).all<UserPricingRow>(),
+  ]);
+
+  if (granular.results.length > MAX_STATS_ROWS) {
+    throw new HTTPError(413, "stats_too_large", "统计数据过多，请缩小日期范围");
+  }
+
+  const userPricing = new Map<string, ModelPricing>();
+  for (const row of pricingRows.results) {
+    userPricing.set(`${row.provider}|${row.model}`, {
+      currency: row.currency === "cny" ? "cny" : "usd",
+      inputPerMtok: row.inputPerMtok,
+      cachedInputPerMtok: row.cachedInputPerMtok,
+      cacheWritePerMtok: row.cacheWritePerMtok,
+      outputPerMtok: row.outputPerMtok,
+    });
+  }
+
+  const days = new Map<string, CostAggregate>();
+  const models = new Map<string, ModelAggregate>();
+  const sources = new Map<string, CostAggregate>();
+  const devices = new Map<string, CostAggregate & { deviceId: string; deviceName: string }>();
+
+  for (const row of granular.results) {
+    const resolved = resolvePricing(row.provider, row.model, userPricing);
+    const cost = splitCost(resolved?.pricing ?? null, row);
+
+    const day = days.get(row.day) ?? emptyAggregate();
+    accumulate(day, row, cost);
+    days.set(row.day, day);
+
+    const modelKey = `${row.provider} ${row.model}`;
+    const model = models.get(modelKey) ?? {
+      ...emptyAggregate(),
+      provider: row.provider,
+      model: row.model,
+      priced: resolved ? 1 : 0,
+      priceSource: resolved?.source ?? null,
+      price: resolved?.pricing ?? null,
+    };
+    accumulate(model, row, cost);
+    models.set(modelKey, model);
+
+    const source = sources.get(row.source) ?? emptyAggregate();
+    accumulate(source, row, cost);
+    sources.set(row.source, source);
+
+    const device = devices.get(row.deviceId) ?? {
+      ...emptyAggregate(), deviceId: row.deviceId, deviceName: row.deviceName,
+    };
+    accumulate(device, row, cost);
+    devices.set(row.deviceId, device);
+  }
+
+  const byTotalDesc = (a: CostAggregate, b: CostAggregate) => aggregateTokens(b) - aggregateTokens(a);
+
+  return json({
+    from,
+    to,
+    days: [...days.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([day, aggregate]) => ({ day, ...aggregate })),
+    models: [...models.values()].sort(byTotalDesc).slice(0, MAX_STATS_MODELS),
+    sources: [...sources.entries()].sort(([, a], [, b]) => byTotalDesc(a, b)).map(([source, aggregate]) => ({ source, ...aggregate })),
+    devices: [...devices.values()].sort(byTotalDesc),
+    serverTime: new Date().toISOString(),
+  });
+}
+interface PricingRow {
+  provider: string;
+  model: string;
+  currency: string;
+  input_per_mtok: number;
+  cached_input_per_mtok: number;
+  cache_write_per_mtok: number;
+  output_per_mtok: number;
+  updated_at: string;
+}
+
+async function handlePricingList(env: Env, principal: Principal): Promise<Response> {
+  const result = await env.DB.prepare(
+    `SELECT provider, model, currency, input_per_mtok, cached_input_per_mtok, cache_write_per_mtok, output_per_mtok, updated_at
+       FROM model_pricing WHERE user_id = ? ORDER BY provider, model`,
+  ).bind(principal.userId).all<PricingRow>();
+
+  return json({
+    pricing: result.results.map((row) => ({
+      provider: row.provider,
+      model: row.model,
+      currency: row.currency,
+      inputPerMtok: row.input_per_mtok,
+      cachedInputPerMtok: row.cached_input_per_mtok,
+      cacheWritePerMtok: row.cache_write_per_mtok,
+      outputPerMtok: row.output_per_mtok,
+      updatedAt: row.updated_at,
+    })),
+    serverTime: new Date().toISOString(),
+  });
+}
+
+async function handlePricingUpsert(request: Request, env: Env, principal: Principal): Promise<Response> {
+  const body = requireObject(await readJSONWithLimit(request, MAX_REQUEST_BYTES), "请求体");
+  const provider = requireString(body.provider, "provider", 200).toLowerCase();
+  const model = requireString(body.model, "model", 200).toLowerCase();
+  const currency = requireString(body.currency, "currency", 3).toLowerCase();
+  if (!ALLOWED_CURRENCIES.has(currency)) {
+    throw new HTTPError(400, "invalid_currency", "currency 必须是 usd 或 cny");
+  }
+  const inputPerMtok = requirePrice(body.inputPerMtok, "inputPerMtok");
+  const cachedInputPerMtok = requirePrice(body.cachedInputPerMtok, "cachedInputPerMtok");
+  const cacheWritePerMtok = requirePrice(body.cacheWritePerMtok, "cacheWritePerMtok");
+  const outputPerMtok = requirePrice(body.outputPerMtok, "outputPerMtok");
+
+  await env.DB.prepare(
+    `INSERT INTO model_pricing(
+       user_id, provider, model, currency,
+       input_per_mtok, cached_input_per_mtok, cache_write_per_mtok, output_per_mtok, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(user_id, provider, model) DO UPDATE SET
+       currency = excluded.currency,
+       input_per_mtok = excluded.input_per_mtok,
+       cached_input_per_mtok = excluded.cached_input_per_mtok,
+       cache_write_per_mtok = excluded.cache_write_per_mtok,
+       output_per_mtok = excluded.output_per_mtok,
+       updated_at = CURRENT_TIMESTAMP`,
+  ).bind(principal.userId, provider, model, currency, inputPerMtok, cachedInputPerMtok, cacheWritePerMtok, outputPerMtok).run();
+
+  return json({ ok: true, provider, model, serverTime: new Date().toISOString() });
+}
+
+async function handlePricingDelete(url: URL, env: Env, principal: Principal): Promise<Response> {
+  const provider = requireString(url.searchParams.get("provider"), "provider", 200).toLowerCase();
+  const model = requireString(url.searchParams.get("model"), "model", 200).toLowerCase();
+  await env.DB.prepare(
+    "DELETE FROM model_pricing WHERE user_id = ? AND provider = ? AND model = ?",
+  ).bind(principal.userId, provider, model).run();
+  return json({ ok: true, serverTime: new Date().toISOString() });
+}
+
+function statsRange(url: URL): { from: string; to: string } {
+  const fromParam = url.searchParams.get("from");
+  const toParam = url.searchParams.get("to");
+  if (fromParam !== null || toParam !== null) {
+    const from = requireDay(fromParam, "from");
+    const to = requireDay(toParam, "to");
+    const range = dayDifference(from, to);
+    if (range < 0 || range > 365) {
+      throw new HTTPError(400, "invalid_date_range", "日期范围必须为 1～366 天");
+    }
+    return { from, to };
+  }
+
+  let days = 30;
+  const daysParam = url.searchParams.get("days");
+  if (daysParam !== null) {
+    const parsed = Number(daysParam);
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 366) {
+      throw new HTTPError(400, "invalid_field", "days 必须是 1～366 的整数");
+    }
+    days = parsed;
+  }
+  const toTime = Date.now();
+  const to = new Date(toTime).toISOString().slice(0, 10);
+  const from = new Date(toTime - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  return { from, to };
+}
+
+function requirePrice(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_PRICE_PER_MTOK) {
+    throw new HTTPError(400, "invalid_field", `${field} 必须是 0～${MAX_PRICE_PER_MTOK} 的数字`);
+  }
+  return value;
+}
+
 function validateSyncInput(value: unknown): SyncInput {
   const object = requireObject(value, "请求体");
   if (object.schemaVersion !== 1) {
@@ -486,6 +775,16 @@ function json(value: JSONValue | Record<string, unknown>, init: ResponseInit = {
   headers.set("Cache-Control", "no-store");
   headers.set("X-Content-Type-Options", "nosniff");
   return new Response(JSON.stringify(value), { ...init, headers });
+}
+
+function html(content: string): Response {
+  return new Response(content, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 function toErrorResponse(error: unknown): Response {
