@@ -1227,7 +1227,7 @@ private struct ShareUsageRow: View {
     let cost: String
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Circle()
                 .fill(AppTheme.accent)
                 .frame(width: 6, height: 6)
@@ -1235,14 +1235,18 @@ private struct ShareUsageRow: View {
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
             Text(formatTokenCount(tokenCount))
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .monospacedDigit()
+                .frame(width: 52, alignment: .trailing)
             Text(cost)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(minWidth: 54, alignment: .trailing)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .frame(width: 100, alignment: .trailing)
         }
         .padding(.vertical, 7)
     }
