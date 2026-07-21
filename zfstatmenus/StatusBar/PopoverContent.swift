@@ -457,7 +457,7 @@ struct TokenDetailView: View {
                     }
                     AppIconButton(
                         systemName: didCopyShareImage ? "checkmark" : "square.and.arrow.up",
-                        help: didCopyShareImage ? "已复制统计图片" : "复制 Token 统计图片"
+                        help: didCopyShareImage ? "已复制手机竖版统计图片" : "复制手机竖版 Token 统计图片"
                     ) {
                         copyTokenOverview()
                     }
@@ -893,101 +893,407 @@ private struct TokenShareSnapshotView: View {
     let showsDevices: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Image("TokenGlyph")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 16, height: 16)
+                    .frame(width: 18, height: 18)
                     .foregroundStyle(AppTheme.accent)
-                    .frame(width: 34, height: 34)
-                    .background(AppTheme.accentSoft, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                VStack(alignment: .leading, spacing: 1) {
+                    .frame(width: 40, height: 40)
+                    .background(AppTheme.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
                     Text("Token 活动")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .tracking(-0.2)
-                    Text("本机与已同步设备的综合统计")
-                        .font(.caption)
+                    Text(Self.dateFormatter.string(from: Date()))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     TokenSyncStatusSymbol(status: syncStatus)
-                    Text(syncStatus.message)
+                    Text(syncLabel)
                         .lineLimit(1)
                 }
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(AppTheme.subtleFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .padding(.horizontal, 7)
+                .frame(height: 26)
+                .background(AppTheme.subtleFill, in: Capsule())
             }
 
+            ShareMetricCard(
+                title: "过去 30 天",
+                value: snapshot.last30DaysTokens,
+                cost: shareCost(last: 30),
+                isPrimary: true
+            )
+
             HStack(spacing: 10) {
-                summaryCard(title: "今日", value: snapshot.todayTokens, dayCount: 1)
-                summaryCard(title: "过去 7 天", value: snapshot.last7DaysTokens, dayCount: 7)
-                summaryCard(title: "过去 30 天", value: snapshot.last30DaysTokens, dayCount: 30)
+                ShareMetricCard(
+                    title: "今日",
+                    value: snapshot.todayTokens,
+                    cost: shareCost(last: 1)
+                )
+                ShareMetricCard(
+                    title: "过去 7 天",
+                    value: snapshot.last7DaysTokens,
+                    cost: shareCost(last: 7)
+                )
             }
 
             if !quotas.isEmpty {
-                ProviderQuotaPanel(quotas: quotas)
+                ShareQuotaSection(quotas: quotas)
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                AppSectionHeader(title: "消耗热力图", subtitle: "近一年 Token 消耗", trailing: "近一年")
-                TokenCalendarHeatmap(
-                    days: snapshot.days,
-                    currency: currency,
-                    usdToCNYRate: usdToCNYRate
-                )
+                AppSectionHeader(title: "消耗热力图", subtitle: "每天的 Token 活跃度", trailing: "近 90 天")
+                ShareTokenHeatmap(days: Array(snapshot.days.suffix(90)))
             }
-            .appPanel(padding: 13)
+            .appPanel(padding: 12)
 
-            HStack(alignment: .top, spacing: 12) {
-                TokenSourceSection(
-                    title: "今日来源",
-                    dayCount: 1,
-                    snapshot: snapshot,
-                    currency: currency,
-                    usdToCNYRate: usdToCNYRate
-                )
-                TokenSourceSection(
-                    title: "过去 30 天来源",
-                    dayCount: 30,
-                    snapshot: snapshot,
-                    currency: currency,
-                    usdToCNYRate: usdToCNYRate
-                )
+            ShareSourceSection(
+                snapshot: snapshot,
+                currency: currency,
+                usdToCNYRate: usdToCNYRate
+            )
+
+            if showsDevices && !devices.isEmpty {
+                ShareDeviceSection(devices: devices)
             }
+
+            HStack {
+                Text("ZFStatMenus")
+                    .fontWeight(.semibold)
+                Spacer()
+                Text("数据仅供个人统计参考")
+            }
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.tertiary)
         }
-        .frame(width: AppTheme.tokenPopoverWidth - 40, alignment: .leading)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
+        .frame(width: 324, alignment: .leading)
+        .padding(18)
         .background {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(AppTheme.canvas)
-                .shadow(color: Color.black.opacity(0.14), radius: 18, y: 8)
+            LinearGradient(
+                colors: [AppTheme.canvas, AppTheme.accent.opacity(0.045), AppTheme.canvas],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
-        }
-        .padding(28)
     }
 
-    private func summaryCard(title: String, value: Int64, dayCount: Int) -> some View {
-        TokenSummaryCard(
-            title: title,
-            value: value,
-            cost: formatTokenCost(
-                snapshot.apiCost(last: dayCount),
-                currency: currency,
-                usdToCNY: usdToCNYRate
-            ),
-            dayCount: dayCount,
-            devices: devices,
-            showsDevices: showsDevices
+    private var syncLabel: String {
+        switch syncStatus.phase {
+        case .disabled: return "仅本机"
+        case .syncing: return "同步中"
+        case .synced: return "已同步"
+        case .pending: return "待同步"
+        case .failed: return "同步异常"
+        }
+    }
+
+    private func shareCost(last dayCount: Int) -> String {
+        formatTokenCost(
+            snapshot.apiCost(last: dayCount),
+            currency: currency,
+            usdToCNY: usdToCNYRate
         )
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter
+    }()
+}
+
+private struct ShareMetricCard: View {
+    let title: String
+    let value: Int64
+    let cost: String
+    var isPrimary = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: isPrimary ? 6 : 4) {
+            HStack {
+                Text(title)
+                    .font(.system(size: isPrimary ? 12 : 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(cost)
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            Text(formatTokenCount(value))
+                .font(.system(size: isPrimary ? 32 : 21, weight: .bold, design: .rounded))
+                .tracking(isPrimary ? -0.7 : -0.35)
+                .monospacedDigit()
+            Text("TOKEN")
+                .font(.system(size: 8, weight: .bold))
+                .tracking(1.2)
+                .foregroundStyle(AppTheme.accent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .appPanel(padding: isPrimary ? 14 : 12)
+    }
+}
+
+private struct ShareQuotaSection: View {
+    let quotas: [QuotaProvider: ProviderQuota]
+
+    private static let displayOrder: [QuotaProvider] = [.codex, .glm, .kimi, .claude]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AppSectionHeader(title: "订阅额度", trailing: "剩余")
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
+            ) {
+                ForEach(Self.displayOrder.filter { quotas[$0] != nil }, id: \.self) { provider in
+                    if let quota = quotas[provider] {
+                        ShareQuotaCard(provider: provider, quota: quota)
+                    }
+                }
+            }
+        }
+        .appPanel(padding: 12)
+    }
+}
+
+private struct ShareQuotaCard: View {
+    let provider: QuotaProvider
+    let quota: ProviderQuota
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(provider.iconAssetName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(AppTheme.accent)
+                Text(provider.displayName)
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+
+            if quota.errorMessage != nil {
+                Text("暂不可用")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(AppTheme.warning)
+            } else {
+                if let window = quota.fiveHour {
+                    quotaLine(title: "5h", window: window)
+                }
+                if let window = quota.weekly {
+                    quotaLine(title: "周", window: window)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9)
+        .background(AppTheme.subtleFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func quotaLine(title: String, window: QuotaWindow) -> some View {
+        let remaining = max(0, 100 - window.usedPercent)
+        return VStack(spacing: 3) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: "%.0f%%", remaining))
+                    .monospacedDigit()
+            }
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.secondary)
+
+            GeometryReader { geometry in
+                Capsule()
+                    .fill(AppTheme.border)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(quotaColor(remaining))
+                            .frame(width: max(2, geometry.size.width * remaining / 100))
+                    }
+            }
+            .frame(height: 4)
+        }
+    }
+
+    private func quotaColor(_ remaining: Double) -> Color {
+        switch quotaRemainingLevel(for: remaining) {
+        case .empty: return .secondary.opacity(0.35)
+        case .critical: return AppTheme.danger
+        case .low: return AppTheme.warning
+        case .medium: return AppTheme.caution
+        case .high: return AppTheme.success
+        }
+    }
+}
+
+private struct ShareTokenHeatmap: View {
+    let days: [DailyTokenUsage]
+
+    private var weeks: [[DailyTokenUsage?]] {
+        guard let first = days.first else { return [] }
+        let leadingEmpty = Calendar.current.component(.weekday, from: first.date) - 1
+        var cells = Array(repeating: Optional<DailyTokenUsage>.none, count: leadingEmpty)
+        cells.append(contentsOf: days.map(Optional.some))
+        while !cells.count.isMultiple(of: 7) { cells.append(nil) }
+        return stride(from: 0, to: cells.count, by: 7).map {
+            Array(cells[$0..<min($0 + 7, cells.count)])
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 3) {
+                ForEach(weeks.indices, id: \.self) { weekIndex in
+                    VStack(spacing: 3) {
+                        ForEach(weeks[weekIndex].indices, id: \.self) { dayIndex in
+                            heatmapCell(weeks[weekIndex][dayIndex])
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+
+            HStack(spacing: 4) {
+                Text("少")
+                ForEach(0..<4) { level in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(heatColor(level: level))
+                        .overlay {
+                            if level == 0 {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .stroke(Color.gray.opacity(0.28), lineWidth: 0.7)
+                            }
+                        }
+                        .frame(width: 9, height: 9)
+                }
+                Text("多")
+            }
+            .font(.system(size: 8, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    @ViewBuilder
+    private func heatmapCell(_ day: DailyTokenUsage?) -> some View {
+        if let day {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(heatColor(level: tokenHeatLevel(day.totalTokens)))
+                .overlay {
+                    if day.totalTokens == 0 {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .stroke(Color.gray.opacity(0.28), lineWidth: 0.7)
+                    }
+                }
+                .frame(width: 18, height: 18)
+        } else {
+            Color.clear.frame(width: 18, height: 18)
+        }
+    }
+
+    private func heatColor(level: Int) -> Color {
+        switch level {
+        case 1: return AppTheme.accent.opacity(0.28)
+        case 2: return AppTheme.accent.opacity(0.62)
+        case 3: return AppTheme.accent
+        default: return AppTheme.elevatedSurface
+        }
+    }
+}
+
+private struct ShareSourceSection: View {
+    let snapshot: TokenUsageSnapshot
+    let currency: String
+    let usdToCNYRate: Double
+
+    private var sources: [TokenSource] {
+        Array(sortedTokenSourcesForDisplay(snapshot, last: 30, usdToCNYRate: usdToCNYRate).prefix(5))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AppSectionHeader(title: "主要来源", subtitle: "过去 30 天", trailing: "≥ 1K")
+            if sources.isEmpty {
+                Text("暂无达到 1K Token 的来源")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(sources.enumerated()), id: \.element) { index, source in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(AppTheme.accent)
+                                .frame(width: 6, height: 6)
+                            Text(source.displayName)
+                                .font(.system(size: 12, weight: .medium))
+                            Spacer()
+                            Text(formatTokenCount(snapshot.totalTokens(for: source, last: 30)))
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                            Text(formatTokenCost(
+                                snapshot.apiCost(for: source, last: 30),
+                                currency: currency,
+                                usdToCNY: usdToCNYRate
+                            ))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 54, alignment: .trailing)
+                        }
+                        .padding(.vertical, 7)
+                        if index < sources.count - 1 {
+                            Divider().overlay(AppTheme.border)
+                        }
+                    }
+                }
+            }
+        }
+        .appPanel(padding: 12)
+    }
+}
+
+private struct ShareDeviceSection: View {
+    let devices: [DeviceTokenUsageSummary]
+
+    private var sortedDevices: [DeviceTokenUsageSummary] {
+        devices.sorted {
+            let lhs = $0.totalTokens(last: 30)
+            let rhs = $1.totalTokens(last: 30)
+            return lhs == rhs
+                ? $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+                : lhs > rhs
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AppSectionHeader(title: "设备", subtitle: "过去 30 天", trailing: "(devices.count) 台")
+            ForEach(Array(sortedDevices.prefix(4))) { device in
+                HStack(spacing: 7) {
+                    Image(systemName: device.isCurrentDevice ? "laptopcomputer" : "desktopcomputer")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 16)
+                    Text(device.displayName)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Text(formatTokenCount(device.totalTokens(last: 30)))
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                }
+            }
+        }
+        .appPanel(padding: 12)
     }
 }
 
@@ -1014,7 +1320,8 @@ private enum TokenShareSnapshotRenderer {
         .environment(\.colorScheme, currentColorScheme)
 
         let renderer = ImageRenderer(content: content)
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        // 360pt × 3 导出 1080px 宽，适合手机竖屏和常见社交平台分享。
+        renderer.scale = 3
         guard let image = renderer.nsImage else { return false }
 
         let pasteboard = NSPasteboard.general
