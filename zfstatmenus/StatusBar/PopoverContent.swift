@@ -620,12 +620,9 @@ struct TokenDetailView: View {
     private func copyTokenOverview() {
         let copied = TokenShareSnapshotRenderer.copyToPasteboard(
             snapshot: monitor.snapshot,
-            devices: monitor.deviceUsages,
-            syncStatus: syncService.status,
             quotas: quotaMonitor.quotas,
             currency: currency,
-            usdToCNYRate: usdToCNYRate,
-            showsDevices: showsDeviceBreakdown
+            usdToCNYRate: usdToCNYRate
         )
         guard copied else {
             NSSound.beep()
@@ -885,63 +882,17 @@ private struct TokenSourceSection: View {
 
 private struct TokenShareSnapshotView: View {
     let snapshot: TokenUsageSnapshot
-    let devices: [DeviceTokenUsageSummary]
-    let syncStatus: TokenSyncStatus
     let quotas: [QuotaProvider: ProviderQuota]
     let currency: String
     let usdToCNYRate: Double
-    let showsDevices: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Image("TokenGlyph")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 18, height: 18)
-                    .foregroundStyle(AppTheme.accent)
-                    .frame(width: 40, height: 40)
-                    .background(AppTheme.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Token 活动")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .tracking(-0.2)
-                    Text(Self.dateFormatter.string(from: Date()))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                HStack(spacing: 5) {
-                    TokenSyncStatusSymbol(status: syncStatus)
-                    Text(syncLabel)
-                        .lineLimit(1)
-                }
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 7)
-                .frame(height: 26)
-                .background(AppTheme.subtleFill, in: Capsule())
-            }
-
             ShareMetricCard(
-                title: "过去 30 天",
-                value: snapshot.last30DaysTokens,
-                cost: shareCost(last: 30),
-                isPrimary: true
+                title: "今日 Token 消耗",
+                value: snapshot.todayTokens,
+                cost: shareCost(last: 1)
             )
-
-            HStack(spacing: 10) {
-                ShareMetricCard(
-                    title: "今日",
-                    value: snapshot.todayTokens,
-                    cost: shareCost(last: 1)
-                )
-                ShareMetricCard(
-                    title: "过去 7 天",
-                    value: snapshot.last7DaysTokens,
-                    cost: shareCost(last: 7)
-                )
-            }
 
             if !quotas.isEmpty {
                 ShareQuotaSection(quotas: quotas)
@@ -953,24 +904,17 @@ private struct TokenShareSnapshotView: View {
             }
             .appPanel(padding: 12)
 
-            ShareSourceSection(
+            ShareModelSection(
                 snapshot: snapshot,
                 currency: currency,
                 usdToCNYRate: usdToCNYRate
             )
 
-            if showsDevices && !devices.isEmpty {
-                ShareDeviceSection(devices: devices)
-            }
-
-            HStack {
-                Text("ZFStatMenus")
-                    .fontWeight(.semibold)
-                Spacer()
-                Text("数据仅供个人统计参考")
-            }
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(.tertiary)
+            ShareSourceSection(
+                snapshot: snapshot,
+                currency: currency,
+                usdToCNYRate: usdToCNYRate
+            )
         }
         .frame(width: 324, alignment: .leading)
         .padding(18)
@@ -983,16 +927,6 @@ private struct TokenShareSnapshotView: View {
         }
     }
 
-    private var syncLabel: String {
-        switch syncStatus.phase {
-        case .disabled: return "仅本机"
-        case .syncing: return "同步中"
-        case .synced: return "已同步"
-        case .pending: return "待同步"
-        case .failed: return "同步异常"
-        }
-    }
-
     private func shareCost(last dayCount: Int) -> String {
         formatTokenCost(
             snapshot.apiCost(last: dayCount),
@@ -1000,26 +934,18 @@ private struct TokenShareSnapshotView: View {
             usdToCNY: usdToCNYRate
         )
     }
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日"
-        return formatter
-    }()
 }
 
 private struct ShareMetricCard: View {
     let title: String
     let value: Int64
     let cost: String
-    var isPrimary = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: isPrimary ? 6 : 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
-                    .font(.system(size: isPrimary ? 12 : 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(cost)
@@ -1028,8 +954,8 @@ private struct ShareMetricCard: View {
                     .foregroundStyle(.secondary)
             }
             Text(formatTokenCount(value))
-                .font(.system(size: isPrimary ? 32 : 21, weight: .bold, design: .rounded))
-                .tracking(isPrimary ? -0.7 : -0.35)
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .tracking(-0.7)
                 .monospacedDigit()
             Text("TOKEN")
                 .font(.system(size: 8, weight: .bold))
@@ -1037,7 +963,7 @@ private struct ShareMetricCard: View {
                 .foregroundStyle(AppTheme.accent)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .appPanel(padding: isPrimary ? 14 : 12)
+        .appPanel(padding: 14)
     }
 }
 
@@ -1210,46 +1136,80 @@ private struct ShareTokenHeatmap: View {
     }
 }
 
+private struct ShareModelSection: View {
+    let snapshot: TokenUsageSnapshot
+    let currency: String
+    let usdToCNYRate: Double
+
+    private var allModels: [ModelUsageDisplaySummary] {
+        sortedModelUsagesForDisplay(
+            snapshot.modelUsages(last: 1),
+            usdToCNYRate: usdToCNYRate,
+            minimumTokens: 1
+        )
+    }
+
+    private var models: [ModelUsageDisplaySummary] { Array(allModels.prefix(5)) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AppSectionHeader(title: "今日模型", trailing: allModels.count > 5 ? "Top 5" : nil)
+            if models.isEmpty {
+                ShareEmptyRow(text: "今日暂无模型消耗")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(models.enumerated()), id: \.element.id) { index, usage in
+                        ShareUsageRow(
+                            title: usage.displayName,
+                            tokenCount: usage.tokens.totalTokens,
+                            cost: formatTokenCost(
+                                usage.estimate,
+                                currency: currency,
+                                usdToCNY: usdToCNYRate
+                            )
+                        )
+                        if index < models.count - 1 {
+                            Divider().overlay(AppTheme.border)
+                        }
+                    }
+                }
+            }
+        }
+        .appPanel(padding: 12)
+    }
+}
+
 private struct ShareSourceSection: View {
     let snapshot: TokenUsageSnapshot
     let currency: String
     let usdToCNYRate: Double
 
     private var sources: [TokenSource] {
-        Array(sortedTokenSourcesForDisplay(snapshot, last: 30, usdToCNYRate: usdToCNYRate).prefix(5))
+        Array(sortedTokenSourcesForDisplay(
+            snapshot,
+            last: 1,
+            usdToCNYRate: usdToCNYRate,
+            minimumTokens: 1
+        ).prefix(5))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AppSectionHeader(title: "主要来源", subtitle: "过去 30 天", trailing: "≥ 1K")
+            AppSectionHeader(title: "今日工具")
             if sources.isEmpty {
-                Text("暂无达到 1K Token 的来源")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 34)
+                ShareEmptyRow(text: "今日暂无工具消耗")
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(sources.enumerated()), id: \.element) { index, source in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(AppTheme.accent)
-                                .frame(width: 6, height: 6)
-                            Text(source.displayName)
-                                .font(.system(size: 12, weight: .medium))
-                            Spacer()
-                            Text(formatTokenCount(snapshot.totalTokens(for: source, last: 30)))
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .monospacedDigit()
-                            Text(formatTokenCost(
-                                snapshot.apiCost(for: source, last: 30),
+                        ShareUsageRow(
+                            title: source.displayName,
+                            tokenCount: snapshot.totalTokens(for: source, last: 1),
+                            cost: formatTokenCost(
+                                snapshot.apiCost(for: source, last: 1),
                                 currency: currency,
                                 usdToCNY: usdToCNYRate
-                            ))
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 54, alignment: .trailing)
-                        }
-                        .padding(.vertical, 7)
+                            )
+                        )
                         if index < sources.count - 1 {
                             Divider().overlay(AppTheme.border)
                         }
@@ -1261,39 +1221,41 @@ private struct ShareSourceSection: View {
     }
 }
 
-private struct ShareDeviceSection: View {
-    let devices: [DeviceTokenUsageSummary]
-
-    private var sortedDevices: [DeviceTokenUsageSummary] {
-        devices.sorted {
-            let lhs = $0.totalTokens(last: 30)
-            let rhs = $1.totalTokens(last: 30)
-            return lhs == rhs
-                ? $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
-                : lhs > rhs
-        }
-    }
+private struct ShareUsageRow: View {
+    let title: String
+    let tokenCount: Int64
+    let cost: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            AppSectionHeader(title: "设备", subtitle: "过去 30 天", trailing: "(devices.count) 台")
-            ForEach(Array(sortedDevices.prefix(4))) { device in
-                HStack(spacing: 7) {
-                    Image(systemName: device.isCurrentDevice ? "laptopcomputer" : "desktopcomputer")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(AppTheme.accent)
-                        .frame(width: 16)
-                    Text(device.displayName)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                    Spacer()
-                    Text(formatTokenCount(device.totalTokens(last: 30)))
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                }
-            }
+        HStack(spacing: 8) {
+            Circle()
+                .fill(AppTheme.accent)
+                .frame(width: 6, height: 6)
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Text(formatTokenCount(tokenCount))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+            Text(cost)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 54, alignment: .trailing)
         }
-        .appPanel(padding: 12)
+        .padding(.vertical, 7)
+    }
+}
+
+private struct ShareEmptyRow: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 34)
     }
 }
 
@@ -1301,21 +1263,15 @@ private struct ShareDeviceSection: View {
 private enum TokenShareSnapshotRenderer {
     static func copyToPasteboard(
         snapshot: TokenUsageSnapshot,
-        devices: [DeviceTokenUsageSummary],
-        syncStatus: TokenSyncStatus,
         quotas: [QuotaProvider: ProviderQuota],
         currency: String,
-        usdToCNYRate: Double,
-        showsDevices: Bool
+        usdToCNYRate: Double
     ) -> Bool {
         let content = TokenShareSnapshotView(
             snapshot: snapshot,
-            devices: devices,
-            syncStatus: syncStatus,
             quotas: quotas,
             currency: currency,
-            usdToCNYRate: usdToCNYRate,
-            showsDevices: showsDevices
+            usdToCNYRate: usdToCNYRate
         )
         .environment(\.colorScheme, currentColorScheme)
 
@@ -1407,13 +1363,14 @@ private func preferredModelName(in usages: [ModelTokenUsage]) -> String {
 
 func sortedModelUsagesForDisplay(
     _ usages: [ModelTokenUsage],
-    usdToCNYRate: Double
+    usdToCNYRate: Double,
+    minimumTokens: Int64 = minimumDisplayedTokenCount
 ) -> [ModelUsageDisplaySummary] {
     let grouped = Dictionary(grouping: usages) { normalizedModelName($0.model) }
         .values
         .map { ModelUsageDisplaySummary(model: preferredModelName(in: $0), usages: $0) }
 
-    return grouped.filter { $0.tokens.totalTokens >= minimumDisplayedTokenCount }.sorted { lhs, rhs in
+    return grouped.filter { $0.tokens.totalTokens >= minimumTokens }.sorted { lhs, rhs in
         let lhsEstimate = lhs.estimate
         let rhsEstimate = rhs.estimate
         let lhsIsPriced = lhsEstimate.pricedTokens > 0
@@ -1437,10 +1394,11 @@ func sortedModelUsagesForDisplay(
 func sortedTokenSourcesForDisplay(
     _ snapshot: TokenUsageSnapshot,
     last dayCount: Int,
-    usdToCNYRate: Double
+    usdToCNYRate: Double,
+    minimumTokens: Int64 = minimumDisplayedTokenCount
 ) -> [TokenSource] {
     TokenSource.allCases.filter {
-        snapshot.totalTokens(for: $0, last: dayCount) >= minimumDisplayedTokenCount
+        snapshot.totalTokens(for: $0, last: dayCount) >= minimumTokens
     }.sorted { lhs, rhs in
         let lhsEstimate = snapshot.apiCost(for: lhs, last: dayCount)
         let rhsEstimate = snapshot.apiCost(for: rhs, last: dayCount)

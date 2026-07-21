@@ -376,6 +376,29 @@ final class TokenUsageTests: XCTestCase {
         )
     }
 
+    func testShareDisplayCanIncludeTodayUsageBelowDefaultThreshold() {
+        let usage = ModelTokenUsage(
+            source: .codex,
+            provider: "openai",
+            model: "gpt-5.5",
+            tokens: TokenBreakdown(input: 999)
+        )
+        let snapshot = TokenUsageSnapshot(
+            generatedAt: Date(),
+            days: [DailyTokenUsage(date: Date(), modelUsages: [usage])],
+            errorMessage: nil
+        )
+
+        XCTAssertEqual(
+            sortedModelUsagesForDisplay([usage], usdToCNYRate: 7.2, minimumTokens: 1).map(\.model),
+            ["gpt-5.5"]
+        )
+        XCTAssertEqual(
+            sortedTokenSourcesForDisplay(snapshot, last: 1, usdToCNYRate: 7.2, minimumTokens: 1),
+            [.codex]
+        )
+    }
+
     func testDisplayMergesSameModelAcrossAllChannelsIgnoringCase() throws {
         let usages = [
             ModelTokenUsage(
