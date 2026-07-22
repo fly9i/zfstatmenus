@@ -102,6 +102,22 @@ final class ProviderQuotaTests: XCTestCase {
         XCTAssertNil(parseClaudeOAuthCredential(Data("not json".utf8)))
     }
 
+    func testClaudeAccessCacheNeverPersistsRefreshToken() throws {
+        let source = ClaudeOAuthCredential(
+            accessToken: "access",
+            refreshToken: "must-not-be-cached",
+            expiresAt: Date(timeIntervalSince1970: 1_893_456_000)
+        )
+
+        let data = try makeClaudeAccessCacheData(source)
+        let cached = try XCTUnwrap(parseClaudeOAuthCredential(data))
+
+        XCTAssertEqual(cached.accessToken, "access")
+        XCTAssertEqual(cached.expiresAt, source.expiresAt)
+        XCTAssertNil(cached.refreshToken)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("must-not-be-cached"))
+    }
+
     // MARK: - Codex
 
     func testCodexMapsWindowsByDurationSeconds() throws {
