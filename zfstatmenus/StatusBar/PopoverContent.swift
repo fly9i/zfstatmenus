@@ -1236,17 +1236,20 @@ private struct ShareUsageRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
             Text(formatTokenCount(tokenCount))
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .frame(width: 52, alignment: .trailing)
+                .layoutPriority(1)
             Text(cost)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
-                .lineLimit(2)
-                .frame(width: 100, alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .allowsTightening(true)
+                .frame(width: 116, alignment: .trailing)
+                .layoutPriority(2)
         }
         .padding(.vertical, 7)
     }
@@ -1264,13 +1267,31 @@ private struct ShareEmptyRow: View {
 }
 
 @MainActor
-private enum TokenShareSnapshotRenderer {
+enum TokenShareSnapshotRenderer {
     static func copyToPasteboard(
         snapshot: TokenUsageSnapshot,
         quotas: [QuotaProvider: ProviderQuota],
         currency: String,
         usdToCNYRate: Double
     ) -> Bool {
+        guard let pngData = renderPNGData(
+            snapshot: snapshot,
+            quotas: quotas,
+            currency: currency,
+            usdToCNYRate: usdToCNYRate
+        ) else { return false }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setData(pngData, forType: .png)
+    }
+
+    static func renderPNGData(
+        snapshot: TokenUsageSnapshot,
+        quotas: [QuotaProvider: ProviderQuota],
+        currency: String,
+        usdToCNYRate: Double
+    ) -> Data? {
         let content = TokenShareSnapshotView(
             snapshot: snapshot,
             quotas: quotas,
@@ -1282,11 +1303,35 @@ private enum TokenShareSnapshotRenderer {
         let renderer = ImageRenderer(content: content)
         // 360pt × 3 导出 1080px 宽，适合手机竖屏和常见社交平台分享。
         renderer.scale = 3
-        guard let image = renderer.nsImage else { return false }
+        // 强制标准动态范围与不透明输出，避免 HDR 屏幕上透明位图边缘出现彩色噪点。
+        renderer.isOpaque = true
+        renderer.colorMode = .nonLinear
+        if #available(macOS 26.0, *) {
+            renderer.allowedDynamicRange = .standard
+        }
+        guard let image = renderer.cgImage,
+              let pngData = standardSRGBPNGData(from: image) else { return nil }
+        return pngData
+    }
 
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        return pasteboard.writeObjects([image])
+    private static func standardSRGBPNGData(from source: CGImage) -> Data? {
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                  data: nil,
+                  width: source.width,
+                  height: source.height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: 0,
+                  space: colorSpace,
+                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+              ) else { return nil }
+
+        // 先铺底再绘制到无 Alpha 的 sRGB 位图，彻底消除透明区域中的未定义 RGB 数据。
+        context.setFillColor(CGColor(gray: currentColorScheme == .dark ? 0 : 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: source.width, height: source.height))
+        context.draw(source, in: CGRect(x: 0, y: 0, width: source.width, height: source.height))
+        guard let normalizedImage = context.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: normalizedImage).representation(using: .png, properties: [:])
     }
 
     private static var currentColorScheme: ColorScheme {

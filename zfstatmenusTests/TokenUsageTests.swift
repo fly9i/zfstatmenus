@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import SQLite3
 import Darwin
 @testable import ZFStatMenus
@@ -396,6 +397,47 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertEqual(
             sortedTokenSourcesForDisplay(snapshot, last: 1, usdToCNYRate: 7.2, minimumTokens: 1),
             [.codex]
+        )
+    }
+
+    @MainActor
+    func testShareSnapshotRendererProducesOpaqueRGBPNG() throws {
+        let usage = ModelTokenUsage(
+            source: .claude,
+            provider: "anthropic",
+            model: "claude-fable-5-with-a-long-display-name",
+            tokens: TokenBreakdown(input: 16_300_000)
+        )
+        let snapshot = TokenUsageSnapshot(
+            generatedAt: Date(),
+            days: [DailyTokenUsage(date: Date(), modelUsages: [usage])],
+            errorMessage: nil
+        )
+
+        let data = try XCTUnwrap(TokenShareSnapshotRenderer.renderPNGData(
+            snapshot: snapshot,
+            quotas: [:],
+            currency: "both",
+            usdToCNYRate: 7.2
+        ))
+        let representation = try XCTUnwrap(NSBitmapImageRep(data: data))
+
+        XCTAssertEqual(representation.pixelsWide, 1_080)
+        XCTAssertGreaterThan(representation.pixelsHigh, 0)
+        XCTAssertFalse(representation.hasAlpha)
+        XCTAssertEqual(representation.colorSpace.colorSpaceModel, .rgb)
+
+        let usdData = try XCTUnwrap(TokenShareSnapshotRenderer.renderPNGData(
+            snapshot: snapshot,
+            quotas: [:],
+            currency: "usd",
+            usdToCNYRate: 7.2
+        ))
+        let usdRepresentation = try XCTUnwrap(NSBitmapImageRep(data: usdData))
+        XCTAssertEqual(
+            representation.pixelsHigh,
+            usdRepresentation.pixelsHigh,
+            "双币种费用应保持单行，不应把分享图行高撑大"
         )
     }
 
