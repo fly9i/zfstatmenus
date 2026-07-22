@@ -919,11 +919,7 @@ private struct TokenShareSnapshotView: View {
         .frame(width: 324, alignment: .leading)
         .padding(18)
         .background {
-            LinearGradient(
-                colors: [AppTheme.canvas, AppTheme.accent.opacity(0.045), AppTheme.canvas],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            ShareSnapshotBackground()
         }
     }
 
@@ -933,6 +929,199 @@ private struct TokenShareSnapshotView: View {
             currency: currency,
             usdToCNY: usdToCNYRate
         )
+    }
+}
+
+private struct ShareSnapshotBackground: View {
+    private let charcoal = Color(red: 0.055, green: 0.047, blue: 0.085)
+    private let plumBlack = Color(red: 0.105, green: 0.055, blue: 0.125)
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                LinearGradient(
+                    colors: [plumBlack, charcoal, Color(red: 0.075, green: 0.045, blue: 0.105)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+
+                Canvas { context, size in
+                    ShareBackgroundArtwork.draw(in: &context, size: size)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .clipped()
+    }
+}
+
+private enum ShareBackgroundArtwork {
+    private static let orange = Color(red: 1.0, green: 0.49, blue: 0.06)
+    private static let coral = Color(red: 1.0, green: 0.20, blue: 0.29)
+    private static let magenta = Color(red: 0.82, green: 0.08, blue: 0.35)
+    private static let plum = Color(red: 0.36, green: 0.07, blue: 0.32)
+    private static let cream = Color(red: 1.0, green: 0.91, blue: 0.72)
+
+    static func draw(in context: inout GraphicsContext, size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+
+        drawTopLeft(in: &context)
+        drawTopRight(in: &context, width: size.width)
+        drawSideRhythm(in: &context, size: size)
+        drawBottomLeft(in: &context, height: size.height)
+        drawBottomRight(in: &context, size: size)
+    }
+
+    private static func drawTopLeft(in context: inout GraphicsContext) {
+        fillRoundedRect(CGRect(x: -5, y: 0, width: 20, height: 11), radius: 2, color: magenta, in: &context)
+        fillCircle(center: CGPoint(x: 8, y: 16), diameter: 3.2, color: coral, in: &context)
+        fillCircle(center: CGPoint(x: 14, y: 16), diameter: 3.2, color: orange, in: &context)
+        fillCircle(center: CGPoint(x: 8, y: 22), diameter: 3.2, color: cream.opacity(0.9), in: &context)
+        fillCircle(center: CGPoint(x: 14, y: 22), diameter: 3.2, color: orange, in: &context)
+        drawDiagonalBars(origin: CGPoint(x: 2, y: 31), color: coral, in: &context)
+    }
+
+    private static func drawTopRight(in context: inout GraphicsContext, width: CGFloat) {
+        fillCircle(center: CGPoint(x: width + 2, y: 4), diameter: 31, color: orange, in: &context)
+        fillRoundedRect(CGRect(x: width - 11, y: 16, width: 6, height: 6), radius: 1, color: plum, in: &context)
+        fillCircle(center: CGPoint(x: width - 8, y: 29), diameter: 3.2, color: magenta, in: &context)
+        fillCircle(center: CGPoint(x: width - 8, y: 35), diameter: 3.2, color: coral, in: &context)
+        fillRoundedRect(CGRect(x: width - 9, y: 44, width: 8, height: 8), radius: 1.5, color: plum, in: &context)
+    }
+
+    private static func drawSideRhythm(in context: inout GraphicsContext, size: CGSize) {
+        let leftFractions: [(CGFloat, Color)] = [
+            (0.18, orange), (0.31, plum), (0.48, coral), (0.72, magenta), (0.88, coral),
+        ]
+        let rightFractions: [(CGFloat, Color)] = [
+            (0.12, magenta), (0.25, coral), (0.39, plum), (0.58, orange), (0.76, magenta),
+        ]
+
+        for (index, item) in leftFractions.enumerated() {
+            let y = size.height * item.0
+            fillRoundedRect(
+                CGRect(x: index.isMultiple(of: 2) ? 4 : 8, y: y, width: 5, height: 5),
+                radius: 1,
+                color: item.1,
+                in: &context
+            )
+            fillCircle(center: CGPoint(x: 10, y: y + 10), diameter: 2.6, color: item.1.opacity(0.8), in: &context)
+            fillCircle(center: CGPoint(x: 10, y: y + 15), diameter: 2.6, color: item.1.opacity(0.55), in: &context)
+        }
+
+        for (index, item) in rightFractions.enumerated() {
+            let y = size.height * item.0
+            fillRoundedRect(
+                CGRect(x: size.width - (index.isMultiple(of: 2) ? 10 : 14), y: y, width: 6, height: 6),
+                radius: 1,
+                color: item.1,
+                in: &context
+            )
+            fillCircle(
+                center: CGPoint(x: size.width - 8, y: y + 11),
+                diameter: 2.8,
+                color: index.isMultiple(of: 2) ? orange : magenta,
+                in: &context
+            )
+        }
+
+        drawDiagonalBars(
+            origin: CGPoint(x: size.width - 15, y: size.height * 0.205),
+            color: magenta,
+            in: &context
+        )
+        drawDiagonalBars(
+            origin: CGPoint(x: 3, y: size.height * 0.62),
+            color: orange.opacity(0.9),
+            in: &context
+        )
+    }
+
+    private static func drawBottomLeft(in context: inout GraphicsContext, height: CGFloat) {
+        fillCircle(center: CGPoint(x: -2, y: height - 25), diameter: 31, color: coral, in: &context)
+        fillRoundedRect(CGRect(x: 5, y: height - 19, width: 8, height: 8), radius: 1, color: magenta, in: &context)
+
+        let colors = [coral, magenta, orange, cream]
+        for row in 0..<3 {
+            for column in 0..<3 where (row + column).isMultiple(of: 2) {
+                let color = colors[(row + column) % colors.count]
+                fillRoundedRect(
+                    CGRect(x: CGFloat(column) * 4.5, y: height - 9 + CGFloat(row) * 4.5, width: 3.5, height: 3.5),
+                    radius: 0.5,
+                    color: color,
+                    in: &context
+                )
+            }
+        }
+    }
+
+    private static func drawBottomRight(in context: inout GraphicsContext, size: CGSize) {
+        fillCircle(
+            center: CGPoint(x: size.width + 1, y: size.height - 6),
+            diameter: 32,
+            color: magenta,
+            in: &context
+        )
+        fillRoundedRect(
+            CGRect(x: size.width - 15, y: size.height - 19, width: 9, height: 9),
+            radius: 1.5,
+            color: orange,
+            in: &context
+        )
+        fillRoundedRect(
+            CGRect(x: size.width - 8, y: size.height - 30, width: 5, height: 5),
+            radius: 1,
+            color: coral,
+            in: &context
+        )
+        drawDiagonalBars(
+            origin: CGPoint(x: size.width - 37, y: size.height - 11),
+            color: coral.opacity(0.75),
+            in: &context
+        )
+    }
+
+    private static func fillRoundedRect(
+        _ rect: CGRect,
+        radius: CGFloat,
+        color: Color,
+        in context: inout GraphicsContext
+    ) {
+        context.fill(Path(roundedRect: rect, cornerRadius: radius), with: .color(color))
+    }
+
+    private static func fillCircle(
+        center: CGPoint,
+        diameter: CGFloat,
+        color: Color,
+        in context: inout GraphicsContext
+    ) {
+        context.fill(
+            Path(ellipseIn: CGRect(
+                x: center.x - diameter / 2,
+                y: center.y - diameter / 2,
+                width: diameter,
+                height: diameter
+            )),
+            with: .color(color)
+        )
+    }
+
+    private static func drawDiagonalBars(
+        origin: CGPoint,
+        color: Color,
+        in context: inout GraphicsContext
+    ) {
+        for offset in stride(from: CGFloat.zero, through: 8, by: 4) {
+            var path = Path()
+            path.move(to: CGPoint(x: origin.x + offset, y: origin.y + 7))
+            path.addLine(to: CGPoint(x: origin.x + offset + 7, y: origin.y))
+            context.stroke(
+                path,
+                with: .color(color),
+                style: StrokeStyle(lineWidth: 1.4, lineCap: .round)
+            )
+        }
     }
 }
 

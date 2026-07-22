@@ -427,6 +427,18 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertFalse(representation.hasAlpha)
         XCTAssertEqual(representation.colorSpace.colorSpaceModel, .rgb)
 
+        let warmEdgePixels = stride(from: 0, to: representation.pixelsHigh, by: 3).reduce(into: 0) { count, y in
+            for x in [3, 12, representation.pixelsWide - 13, representation.pixelsWide - 4] {
+                guard let color = representation.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                if color.redComponent > 0.45,
+                   color.redComponent > color.greenComponent * 1.15,
+                   color.redComponent > color.blueComponent * 1.18 {
+                    count += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(warmEdgePixels, 12, "分享图窄边应包含暖色几何装饰")
+
         let usdData = try XCTUnwrap(TokenShareSnapshotRenderer.renderPNGData(
             snapshot: snapshot,
             quotas: [:],
