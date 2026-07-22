@@ -885,6 +885,7 @@ private struct TokenShareSnapshotView: View {
     let quotas: [QuotaProvider: ProviderQuota]
     let currency: String
     let usdToCNYRate: Double
+    let colorScheme: ColorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -920,11 +921,17 @@ private struct TokenShareSnapshotView: View {
         .padding(18)
         .background {
             LinearGradient(
-                colors: [
-                    Color(red: 0.18, green: 0.055, blue: 0.24),
-                    Color(red: 0.52, green: 0.12, blue: 0.29),
-                    Color(red: 0.94, green: 0.38, blue: 0.17),
-                ],
+                colors: colorScheme == .dark
+                    ? [
+                        Color(red: 0.16, green: 0.17, blue: 0.18),
+                        Color(red: 0.10, green: 0.11, blue: 0.12),
+                        Color(red: 0.06, green: 0.065, blue: 0.07),
+                    ]
+                    : [
+                        Color(red: 0.94, green: 0.945, blue: 0.95),
+                        Color.white,
+                        Color(red: 0.87, green: 0.88, blue: 0.90),
+                    ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -1300,7 +1307,8 @@ enum TokenShareSnapshotRenderer {
             snapshot: snapshot,
             quotas: quotas,
             currency: currency,
-            usdToCNYRate: usdToCNYRate
+            usdToCNYRate: usdToCNYRate,
+            colorScheme: currentColorScheme
         )
         .environment(\.colorScheme, currentColorScheme)
 
