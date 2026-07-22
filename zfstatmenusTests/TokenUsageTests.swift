@@ -427,17 +427,22 @@ final class TokenUsageTests: XCTestCase {
         XCTAssertFalse(representation.hasAlpha)
         XCTAssertEqual(representation.colorSpace.colorSpaceModel, .rgb)
 
-        let warmEdgePixels = stride(from: 0, to: representation.pixelsHigh, by: 3).reduce(into: 0) { count, y in
-            for x in [3, 12, representation.pixelsWide - 13, representation.pixelsWide - 4] {
-                guard let color = representation.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                if color.redComponent > 0.45,
-                   color.redComponent > color.greenComponent * 1.15,
-                   color.redComponent > color.blueComponent * 1.18 {
-                    count += 1
-                }
-            }
-        }
-        XCTAssertGreaterThan(warmEdgePixels, 12, "分享图窄边应包含暖色几何装饰")
+        let topEdge = try XCTUnwrap(
+            representation.colorAt(x: 3, y: 3)?.usingColorSpace(.sRGB)
+        )
+        let bottomEdge = try XCTUnwrap(
+            representation.colorAt(x: 3, y: representation.pixelsHigh - 4)?.usingColorSpace(.sRGB)
+        )
+        let topChroma = max(topEdge.redComponent, max(topEdge.greenComponent, topEdge.blueComponent))
+            - min(topEdge.redComponent, min(topEdge.greenComponent, topEdge.blueComponent))
+        let bottomChroma = max(bottomEdge.redComponent, max(bottomEdge.greenComponent, bottomEdge.blueComponent))
+            - min(bottomEdge.redComponent, min(bottomEdge.greenComponent, bottomEdge.blueComponent))
+        let edgeColorDistance = abs(topEdge.redComponent - bottomEdge.redComponent)
+            + abs(topEdge.greenComponent - bottomEdge.greenComponent)
+            + abs(topEdge.blueComponent - bottomEdge.blueComponent)
+        XCTAssertGreaterThan(topChroma, 0.08, "分享图渐变顶部应保留彩色")
+        XCTAssertGreaterThan(bottomChroma, 0.08, "分享图渐变底部应保留彩色")
+        XCTAssertGreaterThan(edgeColorDistance, 0.3, "分享图背景应呈现明显的彩色渐变")
 
         let usdData = try XCTUnwrap(TokenShareSnapshotRenderer.renderPNGData(
             snapshot: snapshot,
