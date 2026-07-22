@@ -470,11 +470,13 @@ enum ProviderQuotaFetcher {
         }
 
         let process = Process()
-        // 直接运行 Claude，避免交互式 shell 加载 ~/.zshrc 后探测其中指向“文稿”等受保护目录的 PATH。
-        // 凭据仍由 Claude Code 自己读取和刷新，本应用不会接触其 Keychain 或凭据文件。
+        // 直接以安全模式运行 Claude，避免加载 shell、项目配置、插件、Hooks、MCP 等内容后
+        // 探测“桌面”“文稿”等受保护目录。凭据仍由 Claude Code 自己读取和刷新。
+        let temporaryDirectory = FileManager.default.temporaryDirectory.standardizedFileURL
         process.executableURL = executableURL
-        process.arguments = ["-p", "/usage", "--output-format", "json"]
-        process.currentDirectoryURL = FileManager.default.temporaryDirectory
+        process.arguments = ["--safe-mode", "-p", "/usage", "--output-format", "json"]
+        process.currentDirectoryURL = temporaryDirectory
+        process.environment = claudeProcessEnvironment(temporaryDirectory: temporaryDirectory)
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -524,6 +526,25 @@ enum ProviderQuotaFetcher {
             URL(fileURLWithPath: "/usr/local/bin/claude"),
         ]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func claudeProcessEnvironment(temporaryDirectory: URL) -> [String: String] {
+        let inherited = ProcessInfo.processInfo.environment
+        let passthroughKeys = [
+            "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE",
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        ]
+        var environment = passthroughKeys.reduce(into: [String: String]()) { result, key in
+            if let value = inherited[key], !value.isEmpty { result[key] = value }
+        }
+        let temporaryPath = temporaryDirectory.path
+        environment["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
+        environment["TMPDIR"] = temporaryPath
+        environment["PWD"] = temporaryPath
+        environment["OLDPWD"] = temporaryPath
+        environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        return environment
     }
 
     // MARK: GLM
