@@ -264,7 +264,7 @@ enum ProviderQuotaFetcher {
         case .glm:
             return ProviderQuotaKeychain.hasGLMAPIKey ? "已在 Keychain 保存 API Key" : "未配置 API Key"
         case .claude:
-            return likelyClaudeExecutableExists()
+            return claudeExecutableURL() != nil
                 ? "通过 Claude Code /usage 读取订阅额度"
                 : "未检测到 Claude Code，请先安装并登录"
         case .codex:
@@ -461,13 +461,20 @@ enum ProviderQuotaFetcher {
     }
 
     private static func runClaudeUsageCommandSynchronously() throws -> ClaudeCLICommandResult {
+        guard let executableURL = claudeExecutableURL() else {
+            return ClaudeCLICommandResult(
+                status: 127,
+                stdout: Data(),
+                stderr: "command not found: claude"
+            )
+        }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        // -l/-i 与用户终端保持一致，可读取 ~/.zprofile 与 ~/.zshrc 中的 PATH/Claude 环境配置。
-        process.arguments = [
-            "-lic",
-            #"exec claude -p "/usage" --output-format json"#,
-        ]
+        // 直接运行 Claude，避免交互式 shell 加载 ~/.zshrc 后探测其中指向“文稿”等受保护目录的 PATH。
+        // 凭据仍由 Claude Code 自己读取和刷新，本应用不会接触其 Keychain 或凭据文件。
+        process.executableURL = executableURL
+        process.arguments = ["-p", "/usage", "--output-format", "json"]
+        process.currentDirectoryURL = FileManager.default.temporaryDirectory
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -505,14 +512,18 @@ enum ProviderQuotaFetcher {
         ].contains { value.contains($0) }
     }
 
-    private static func likelyClaudeExecutableExists() -> Bool {
+    private static func claudeExecutableURL() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return [
-            home.appendingPathComponent(".local/bin/claude").path,
-            home.appendingPathComponent(".npm-global/bin/claude").path,
-            "/opt/homebrew/bin/claude",
-            "/usr/local/bin/claude",
-        ].contains { FileManager.default.isExecutableFile(atPath: $0) }
+        let candidates = [
+            home.appendingPathComponent(".local/bin/claude"),
+            home.appendingPathComponent(".claude/local/claude"),
+            home.appendingPathComponent(".npm-global/bin/claude"),
+            home.appendingPathComponent(".volta/bin/claude"),
+            home.appendingPathComponent(".bun/bin/claude"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/claude"),
+            URL(fileURLWithPath: "/usr/local/bin/claude"),
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
     // MARK: GLM
