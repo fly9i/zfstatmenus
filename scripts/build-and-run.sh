@@ -61,12 +61,43 @@ case "$configuration" in
     *) fail "--configuration 只支持 Debug 或 Release" ;;
 esac
 
-for command_name in xcodebuild open pgrep pkill; do
+for command_name in xcodebuild open pgrep pkill security defaults awk codesign grep; do
     command -v "$command_name" >/dev/null 2>&1 || fail "缺少命令：$command_name"
 done
 
+resolve_development_team() {
+    if [[ -n "${ZFSTAT_DEVELOPMENT_TEAM:-}" ]]; then
+        validate_development_team "$ZFSTAT_DEVELOPMENT_TEAM"
+        printf '%s\n' "$ZFSTAT_DEVELOPMENT_TEAM"
+        return
+    fi
+
+    local configured_team
+    configured_team="$(defaults read com.zfstat.ZFStatMenus.build DevelopmentTeam 2>/dev/null || true)"
+    if [[ -n "$configured_team" ]]; then
+        validate_development_team "$configured_team"
+        printf '%s\n' "$configured_team"
+        return
+    fi
+
+    local identity_line
+    identity_line="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development:/ { print; exit }')"
+    if [[ "$identity_line" =~ \(([A-Z0-9]{10})\)[[:space:]]*$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return
+    fi
+
+    fail "未找到 Apple Development 签名证书；请先在 Xcode 登录开发者账号并创建证书，或设置 ZFSTAT_DEVELOPMENT_TEAM"
+}
+
+validate_development_team() {
+    local value="$1"
+    [[ "$value" =~ ^[A-Z0-9]{10}$ ]] || fail "开发团队 ID 必须是 10 位大写字母或数字"
+}
+
 readonly derived_data_path="${PROJECT_ROOT}/build/RunDerivedData"
 readonly app_path="${derived_data_path}/Build/Products/${configuration}/${PRODUCT_NAME}.app"
+readonly development_team="$(resolve_development_team)"
 
 build_actions=(build)
 if [[ "$clean_build" == true ]]; then
@@ -83,11 +114,24 @@ xcodebuild \
     -configuration "$configuration" \
     -destination "generic/platform=macOS" \
     -derivedDataPath "$derived_data_path" \
-    CODE_SIGNING_ALLOWED=NO \
-    CODE_SIGNING_REQUIRED=NO \
+    -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$development_team" \
+    CODE_SIGN_STYLE=Automatic \
+    CODE_SIGN_IDENTITY="Apple Development" \
+    CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGNING_REQUIRED=YES \
     "${build_actions[@]}"
 
 [[ -d "$app_path" ]] || fail "未找到构建产物：$app_path"
+
+signature_details="$(codesign -dv --verbose=4 "$app_path" 2>&1)"
+if ! grep -Fq "TeamIdentifier=${development_team}" <<<"$signature_details"; then
+    fail "构建产物没有使用预期的开发团队签名"
+fi
+if grep -Fq "Signature=adhoc" <<<"$signature_details"; then
+    fail "构建产物仍是 ad-hoc 签名"
+fi
+codesign --verify --deep --strict --verbose=2 "$app_path"
 
 if pgrep -x "$PRODUCT_NAME" >/dev/null 2>&1; then
     echo "关闭旧的 ${PRODUCT_NAME} 实例..."
