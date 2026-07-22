@@ -18,104 +18,58 @@ final class ProviderQuotaTests: XCTestCase {
 
     // MARK: - Claude
 
-    func testClaudeParsesFractionalPercentageUtilization() throws {
-        let json = """
-        {"five_hour": {"utilization": 0.42, "resets_at": "2026-07-17T13:00:00.000Z"},
-         "seven_day": {"utilization": 0.12, "resets_at": "2026-07-24T00:00:00.000Z"}}
-        """
-        let quota = try ProviderQuotaParser.parseClaude(Data(json.utf8))
-
-        XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 0.42, accuracy: 0.001)
-        XCTAssertEqual(quota.weekly?.usedPercent ?? -1, 0.12, accuracy: 0.001)
-        XCTAssertEqual(
-            quota.fiveHour?.resetsAt?.timeIntervalSince1970 ?? 0,
-            utcDate(2026, 7, 17, 13, 0).timeIntervalSince1970,
-            accuracy: 0.001
-        )
-        XCTAssertEqual(
-            quota.weekly?.resetsAt?.timeIntervalSince1970 ?? 0,
-            utcDate(2026, 7, 24, 0, 0).timeIntervalSince1970,
-            accuracy: 0.001
-        )
-    }
-
-    func testClaudeParsesPercentFormUtilization() throws {
-        let json = """
-        {"five_hour": {"utilization": 42, "resets_at": "2026-07-17T13:00:00Z"},
-         "seven_day": {"utilization": 1, "resets_at": "2026-07-24T00:00:00Z"}}
-        """
-        let quota = try ProviderQuotaParser.parseClaude(Data(json.utf8))
-
-        XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 42, accuracy: 0.001)
-        XCTAssertEqual(quota.weekly?.usedPercent ?? -1, 1, accuracy: 0.001)
-    }
-
-    func testClaudeToleratesMissingResetsAt() throws {
-        let json = #"{"five_hour": {"utilization": 0.5}}"#
-        let quota = try ProviderQuotaParser.parseClaude(Data(json.utf8))
-
-        XCTAssertEqual(quota.fiveHour?.usedPercent ?? -1, 0.5, accuracy: 0.001)
-        XCTAssertNil(quota.fiveHour?.resetsAt)
-        XCTAssertNil(quota.weekly)
-    }
-
-    func testClaudeThrowsWhenNoWindowPresent() {
-        XCTAssertThrowsError(try ProviderQuotaParser.parseClaude(Data("{}".utf8)))
-    }
-
-    func testClaudeOAuthCredentialParsesMillisExpiryAndRefreshToken() {
-        let json = """
-        {"claudeAiOauth": {
-          "accessToken": "access-old", "refreshToken": "refresh-old",
-          "expiresAt": 1893456000000,
-          "scopes": ["user:inference"], "subscriptionType": "max"
-        }}
-        """
-        let credential = parseClaudeOAuthCredential(Data(json.utf8))
-
-        XCTAssertEqual(credential?.accessToken, "access-old")
-        XCTAssertEqual(credential?.refreshToken, "refresh-old")
-        XCTAssertEqual(credential?.expiresAt, Date(timeIntervalSince1970: 1_893_456_000))
-        XCTAssertEqual(
-            credential?.isExpired(at: Date(timeIntervalSince1970: 1_893_455_980), leeway: 30),
-            true
-        )
-    }
-
-    func testClaudeOAuthCredentialAcceptsSecondsAndMissingExpiry() {
-        let seconds = parseClaudeOAuthCredential(Data(
-            #"{"claudeAiOauth":{"accessToken":"access","expiresAt":"1893456000"}}"#.utf8
-        ))
-        let missing = parseClaudeOAuthCredential(Data(
-            #"{"claudeAiOauth":{"accessToken":"access"}}"#.utf8
-        ))
-
-        XCTAssertEqual(seconds?.expiresAt, Date(timeIntervalSince1970: 1_893_456_000))
-        XCTAssertNil(missing?.expiresAt)
-        XCTAssertEqual(missing?.isExpired(at: Date()), false)
-    }
-
-    func testClaudeOAuthCredentialRejectsMissingTokenAndGarbage() {
-        XCTAssertNil(parseClaudeOAuthCredential(Data(
-            #"{"claudeAiOauth":{"refreshToken":"refresh"}}"#.utf8
+    func testClaudeCLIUsageParsesSubscriptionWindowsFromJSONResult() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 7, day: 22, hour: 12
         )))
-        XCTAssertNil(parseClaudeOAuthCredential(Data("not json".utf8)))
-    }
+        let data = try claudeCLIEnvelope("""
+        You are currently using your subscription to power your Claude Code usage
 
-    func testClaudeAccessCacheNeverPersistsRefreshToken() throws {
-        let source = ClaudeOAuthCredential(
-            accessToken: "access",
-            refreshToken: "must-not-be-cached",
-            expiresAt: Date(timeIntervalSince1970: 1_893_456_000)
+        Current session: 0% used
+        Current week (all models): 9% used · resets Jul 24 at 11am (Asia/Shanghai)
+        """)
+
+        let quota = try ProviderQuotaParser.parseClaudeCLIUsage(
+            data,
+            now: now,
+            calendar: calendar
         )
 
-        let data = try makeClaudeAccessCacheData(source)
-        let cached = try XCTUnwrap(parseClaudeOAuthCredential(data))
+        XCTAssertEqual(quota.fiveHour?.usedPercent, 0)
+        XCTAssertEqual(quota.weekly?.usedPercent, 9)
+        XCTAssertNil(quota.fiveHour?.resetsAt)
+        XCTAssertEqual(
+            quota.weekly?.resetsAt,
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 24, hour: 11))
+        )
+    }
 
-        XCTAssertEqual(cached.accessToken, "access")
-        XCTAssertEqual(cached.expiresAt, source.expiresAt)
-        XCTAssertNil(cached.refreshToken)
-        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("must-not-be-cached"))
+    func testClaudeCLIUsageIgnoresLoginShellNoiseBeforeJSON() throws {
+        let json = try claudeCLIEnvelope("""
+        Current session: 12.5% used · resets Jul 22 at 3pm (Asia/Shanghai)
+        Current week (all models): 34% used
+        """)
+        let data = Data("shell startup banner\n\u{001B}]1337;SetBadgeFormat=test\u{0007}".utf8) + json
+
+        let quota = try ProviderQuotaParser.parseClaudeCLIUsage(data)
+
+        XCTAssertEqual(quota.fiveHour?.usedPercent, 12.5)
+        XCTAssertEqual(quota.weekly?.usedPercent, 34)
+    }
+
+    func testClaudeCLIUsageRejectsSessionCostOutputWithoutSubscriptionLimits() throws {
+        let data = try claudeCLIEnvelope("""
+        Total cost: $0.0000
+        Usage: 0 input, 0 output, 0 cache read, 0 cache write
+        """)
+
+        XCTAssertThrowsError(try ProviderQuotaParser.parseClaudeCLIUsage(data))
+    }
+
+    func testClaudeCLIUsageRejectsInvalidJSON() {
+        XCTAssertThrowsError(try ProviderQuotaParser.parseClaudeCLIUsage(Data("not json".utf8)))
     }
 
     // MARK: - Codex
@@ -290,7 +244,7 @@ final class ProviderQuotaTests: XCTestCase {
 
     func testAllParsersThrowOnGarbageData() {
         let garbage = Data("not a json payload".utf8)
-        XCTAssertThrowsError(try ProviderQuotaParser.parseClaude(garbage))
+        XCTAssertThrowsError(try ProviderQuotaParser.parseClaudeCLIUsage(garbage))
         XCTAssertThrowsError(try ProviderQuotaParser.parseCodex(garbage))
         XCTAssertThrowsError(try ProviderQuotaParser.parseKimi(garbage))
         XCTAssertThrowsError(try ProviderQuotaParser.parseGLM(garbage))
@@ -396,6 +350,16 @@ final class ProviderQuotaTests: XCTestCase {
     }
 
     // MARK: - 辅助
+
+    private func claudeCLIEnvelope(_ result: String) throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": result,
+            "usage": ["input_tokens": 0, "output_tokens": 0],
+        ])
+    }
 
     private func utcDate(
         _ year: Int, _ month: Int, _ day: Int,

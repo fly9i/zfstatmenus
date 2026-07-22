@@ -1,10 +1,10 @@
 import Combine
 import Foundation
-import Security
 
 // 订阅额度采集：后台每 5 分钟刷新一次；Token 弹窗打开时若数据过期（>60 秒）也会触发刷新。
 // 凭据读取与网络请求都在后台队列完成，结果回主线程发布。
-// 只有「已启用且检测到凭据」的提供方会出现在 quotas 中；查询失败的保留错误文案，不静默消失。
+// 已启用的 Claude 即使未安装或未认证也保留卡片并显示提示；其他提供方检测不到凭据时不展示。
+// 查询失败的卡片保留错误文案，不静默消失。
 final class ProviderQuotaMonitor: ObservableObject, @unchecked Sendable {
     static let shared = ProviderQuotaMonitor()
 
@@ -104,7 +104,6 @@ final class ProviderQuotaMonitor: ObservableObject, @unchecked Sendable {
 enum ProviderQuotaKeychain {
     private static let service = "com.zfstat.ZFStatMenus.provider-quota"
     private static let glmAccount = "glm-api-key"
-    private static let claudeAccessCacheAccount = "claude-access-cache"
 
     static var hasGLMAPIKey: Bool {
         guard let key = glmAPIKey() else { return false }
@@ -117,23 +116,6 @@ enum ProviderQuotaKeychain {
 
     static func saveGLMAPIKey(_ key: String) throws {
         try save(key.trimmingCharacters(in: .whitespacesAndNewlines), account: glmAccount)
-    }
-
-    // 只缓存 Claude 的短期 access token 与到期时间，不保存 refresh token。
-    // 后台额度轮询优先使用本应用自己的 Keychain 项，避免反复解锁 Claude Code 的凭据项。
-    static func claudeAccessCache() -> ClaudeOAuthCredential? {
-        guard let value = KeychainStore.loadToken(service: service, account: claudeAccessCacheAccount) else {
-            return nil
-        }
-        return parseClaudeOAuthCredential(Data(value.utf8))
-    }
-
-    static func saveClaudeAccessCache(_ credential: ClaudeOAuthCredential) throws {
-        let data = try makeClaudeAccessCacheData(credential)
-        guard let value = String(data: data, encoding: .utf8) else {
-            throw ProviderQuotaError.network("无法编码 Claude access token 缓存")
-        }
-        try save(value, account: claudeAccessCacheAccount)
     }
 
     private static func save(_ value: String, account: String) throws {
@@ -230,56 +212,6 @@ private func kimiCLIExpiryDate(_ value: Any?) -> Date? {
     return Date(timeIntervalSince1970: seconds > 1e12 ? seconds / 1_000 : seconds)
 }
 
-// MARK: - Claude Code 凭据
-
-// Claude Code 的 access token 是短期凭据；登录状态由一次性轮换的 refresh token 维持。
-// 本应用对 Claude 凭据只读不写、不代为刷新（原因见 fetchClaude 注释）。
-// expiresAt 在 Claude Code 凭据中使用毫秒时间戳。
-struct ClaudeOAuthCredential: Equatable {
-    let accessToken: String
-    let refreshToken: String?
-    let expiresAt: Date?
-
-    func isExpired(at now: Date = Date(), leeway: TimeInterval = 0) -> Bool {
-        guard let expiresAt else { return false }
-        return expiresAt <= now.addingTimeInterval(leeway)
-    }
-}
-
-// 本应用缓存只序列化短期 access token，刻意丢弃源凭据中的 refresh token。
-func makeClaudeAccessCacheData(_ credential: ClaudeOAuthCredential) throws -> Data {
-    var oauth: [String: Any] = ["accessToken": credential.accessToken]
-    if let expiresAt = credential.expiresAt {
-        oauth["expiresAt"] = Int64(expiresAt.timeIntervalSince1970 * 1_000)
-    }
-    return try JSONSerialization.data(withJSONObject: ["claudeAiOauth": oauth])
-}
-
-// 解析完整 Claude Code 凭据，与 Keychain / 文件 IO 分离，便于覆盖格式兼容测试。
-func parseClaudeOAuthCredential(_ data: Data) -> ClaudeOAuthCredential? {
-    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let oauth = object["claudeAiOauth"] as? [String: Any],
-          let accessToken = nonEmptyString(oauth["accessToken"]) else { return nil }
-    return ClaudeOAuthCredential(
-        accessToken: accessToken,
-        refreshToken: nonEmptyString(oauth["refreshToken"]),
-        expiresAt: claudeOAuthExpiryDate(oauth["expiresAt"])
-    )
-}
-
-private func claudeOAuthExpiryDate(_ value: Any?) -> Date? {
-    let raw: Double?
-    if let number = value as? NSNumber {
-        raw = number.doubleValue
-    } else if let string = value as? String {
-        raw = Double(string)
-    } else {
-        raw = nil
-    }
-    guard let timestamp = raw, timestamp > 0 else { return nil }
-    return Date(timeIntervalSince1970: timestamp > 1e12 ? timestamp / 1_000 : timestamp)
-}
-
 // MARK: - 凭据检测与网络请求
 
 enum ProviderQuotaError: LocalizedError {
@@ -296,103 +228,19 @@ enum ProviderQuotaError: LocalizedError {
     }
 }
 
-// Claude Code 没有公开的「仅刷新 OAuth」命令。只有 access token 失效时才运行一次最小化
-// 的无工具、单轮 Haiku 请求，让 Claude Code 用自身的 Keychain 权限完成 refresh token 轮换。
-// 失败或成功后都有冷却时间，避免额度接口异常时每 5 分钟重复启动 CLI。
-private actor ClaudeCodeTokenRefresher {
-    static let shared = ClaudeCodeTokenRefresher()
-
-    private var lastAttemptAt: Date?
-    private let cooldown: TimeInterval = 10 * 60
-
-    func refresh() async throws {
-        if let lastAttemptAt, Date().timeIntervalSince(lastAttemptAt) < cooldown {
-            throw ProviderQuotaError.network("Claude 凭据刷新处于冷却期，请稍后再试")
-        }
-        lastAttemptAt = Date()
-        try await Task.detached(priority: .utility) {
-            try Self.runMinimalClaudeRequest()
-        }.value
-    }
-
-    private nonisolated static func runMinimalClaudeRequest() throws {
-        guard let executableURL = claudeExecutableURL() else {
-            throw ProviderQuotaError.network("未找到 Claude Code 可执行文件")
-        }
-
-        let process = Process()
-        process.executableURL = executableURL
-        process.arguments = [
-            "--safe-mode",
-            "-p", "Reply exactly OK.",
-            "--model", "haiku",
-            "--max-turns", "1",
-            "--tools", "",
-            "--system-prompt", "Reply exactly OK.",
-            "--thinking", "disabled",
-            "--no-session-persistence",
-            "--output-format", "text",
-        ]
-        process.currentDirectoryURL = FileManager.default.temporaryDirectory
-
-        // 确保这次请求使用 Claude 订阅 OAuth，而不是用户 shell 中优先级更高的 API Key/云厂商配置。
-        var environment = ProcessInfo.processInfo.environment
-        for key in [
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_BASE_URL",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "CLAUDE_CODE_USE_BEDROCK",
-            "CLAUDE_CODE_USE_VERTEX",
-            "CLAUDE_CODE_USE_FOUNDRY",
-            "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-            "CLAUDE_CODE_USE_MANTLE",
-        ] {
-            environment.removeValue(forKey: key)
-        }
-        process.environment = environment
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
-        do {
-            try process.run()
-        } catch {
-            throw ProviderQuotaError.network("无法启动 Claude Code：\(error.localizedDescription)")
-        }
-        if finished.wait(timeout: .now() + 60) == .timedOut {
-            process.terminate()
-            throw ProviderQuotaError.network("Claude Code 最小刷新超时")
-        }
-        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-            throw ProviderQuotaError.network("Claude Code 最小刷新失败（退出码 \(process.terminationStatus)）")
-        }
-    }
-
-    private nonisolated static func claudeExecutableURL() -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        var candidates = [
-            home.appendingPathComponent(".local/bin/claude"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/claude"),
-            URL(fileURLWithPath: "/usr/local/bin/claude"),
-        ]
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            candidates.append(contentsOf: path.split(separator: ":").map {
-                URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("claude")
-            })
-        }
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
-    }
-}
-
 enum ProviderQuotaFetcher {
     private struct KimiCredentialFile {
         let url: URL
         let credential: KimiCLICredential
     }
 
-    // 返回 nil 表示未配置或检测不到凭据（弹窗不展示该卡片）
+    private struct ClaudeCLICommandResult {
+        let status: Int32
+        let stdout: Data
+        let stderr: String
+    }
+
+    // 返回 nil 表示未配置或检测不到凭据（Claude 始终返回额度或错误提示）
     static func fetch(_ provider: QuotaProvider) async -> ProviderQuota? {
         switch provider {
         case .kimi: return await fetchKimi()
@@ -416,13 +264,9 @@ enum ProviderQuotaFetcher {
         case .glm:
             return ProviderQuotaKeychain.hasGLMAPIKey ? "已在 Keychain 保存 API Key" : "未配置 API Key"
         case .claude:
-            if claudeKeychainItemExists() {
-                return "已检测到 Keychain 凭据（Claude Code-credentials）"
-            }
-            if FileManager.default.fileExists(atPath: claudeCredentialsFileURL.path) {
-                return "已检测到 ~/.claude/.credentials.json"
-            }
-            return "未检测到凭据，请先在终端登录 Claude Code"
+            return likelyClaudeExecutableExists()
+                ? "通过 Claude Code /usage 读取订阅额度"
+                : "未检测到 Claude Code，请先安装并登录"
         case .codex:
             if FileManager.default.fileExists(atPath: codexAuthFileURL.path) {
                 return "已检测到 ~/.codex/auth.json"
@@ -582,105 +426,93 @@ enum ProviderQuotaFetcher {
 
     // MARK: Claude
 
-    private static var claudeCredentialsFileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
-    }
-
-    private static let claudeAuthHint = "Claude 凭据刷新失败，请在终端检查 Claude Code 登录状态"
-
-    // 日常轮询只读本应用自己的短期 access-token 缓存。缓存到期或接口返回 401 时，
-    // 让 Claude Code 自己完成 refresh token 轮换，再只读一次其 Keychain 获取新 access token。
-    // 本应用永不使用 refresh token，也不写入 Claude Code 的 Keychain 项。
+    // 让 Claude Code 自己读取凭据、刷新 OAuth 并查询订阅额度。
+    // 本应用只解析 CLI 的 JSON 输出，不访问 Claude Code 的 Keychain 或凭据文件。
     private static func fetchClaude() async -> ProviderQuota? {
-        guard var credential = loadCachedOrSourceClaudeCredential() else { return nil }
-
-        if credential.isExpired(leeway: 60) {
-            do {
-                credential = try await refreshClaudeCredential(previous: credential)
-            } catch {
-                return .failure(errorMessage(error, authHint: claudeAuthHint))
-            }
-        }
-
         do {
-            return try await fetchClaudeUsage(accessToken: credential.accessToken)
-        } catch ProviderQuotaError.unauthorized {
+            let result = try await runClaudeUsageCommand()
+            let combinedOutput = String(decoding: result.stdout, as: UTF8.self) + "\n" + result.stderr
+            if result.status == 127 || combinedOutput.localizedCaseInsensitiveContains("command not found") {
+                return .failure("未安装 Claude Code，请先安装后再查看额度")
+            }
+            if result.status != 0 {
+                if isClaudeAuthenticationFailure(combinedOutput) {
+                    return .failure("Claude Code 未认证，请先在终端运行 claude auth login")
+                }
+                return .failure("Claude Code /usage 执行失败（退出码 \(result.status)）")
+            }
             do {
-                let latest = try await refreshClaudeCredential(previous: credential)
-                return try await fetchClaudeUsage(accessToken: latest.accessToken)
+                return try ProviderQuotaParser.parseClaudeCLIUsage(result.stdout)
             } catch {
-                return .failure(errorMessage(error, authHint: claudeAuthHint))
+                if isClaudeAuthenticationFailure(combinedOutput) {
+                    return .failure("Claude Code 未认证，请先在终端运行 claude auth login")
+                }
+                return .failure("未读取到 Claude 订阅额度，请确认 Claude Code 使用订阅账号登录")
             }
         } catch {
-            return .failure(errorMessage(error, authHint: claudeAuthHint))
+            return .failure("Claude Code /usage 执行失败：\(error.localizedDescription)")
         }
     }
 
-    private static func fetchClaudeUsage(accessToken: String) async throws -> ProviderQuota {
-        let url = URL(string: "https://api.anthropic.com/api/oauth/usage")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        let data = try await send(request)
-        return try ProviderQuotaParser.parseClaude(data)
+    private static func runClaudeUsageCommand() async throws -> ClaudeCLICommandResult {
+        try await Task.detached(priority: .utility) {
+            try runClaudeUsageCommandSynchronously()
+        }.value
     }
 
-    private static func loadCachedOrSourceClaudeCredential() -> ClaudeOAuthCredential? {
-        if let cached = ProviderQuotaKeychain.claudeAccessCache() {
-            return cached
-        }
-        guard let credential = loadClaudeCredential() else { return nil }
-        try? ProviderQuotaKeychain.saveClaudeAccessCache(credential)
-        return credential
-    }
-
-    private static func refreshClaudeCredential(
-        previous: ClaudeOAuthCredential
-    ) async throws -> ClaudeOAuthCredential {
-        try await ClaudeCodeTokenRefresher.shared.refresh()
-        guard let latest = loadClaudeCredential() else {
-            throw ProviderQuotaError.network("Claude Code 已运行，但无法读取更新后的凭据")
-        }
-        guard latest.accessToken != previous.accessToken || !latest.isExpired(leeway: 30) else {
-            throw ProviderQuotaError.unauthorized
-        }
-        try? ProviderQuotaKeychain.saveClaudeAccessCache(latest)
-        return latest
-    }
-
-    // 仅在本应用缓存缺失或 Claude Code 完成刷新后读取一次源凭据。
-    // 凭据来源：① Keychain（service: Claude Code-credentials）② ~/.claude/.credentials.json。
-    private static func loadClaudeCredential() -> ClaudeOAuthCredential? {
-        if let data = readClaudeKeychain(),
-           let credential = parseClaudeOAuthCredential(data) {
-            return credential
-        }
-        if let data = try? Data(contentsOf: claudeCredentialsFileURL) {
-            return parseClaudeOAuthCredential(data)
-        }
-        return nil
-    }
-
-    private static func readClaudeKeychain() -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
+    private static func runClaudeUsageCommandSynchronously() throws -> ClaudeCLICommandResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        // -l/-i 与用户终端保持一致，可读取 ~/.zprofile 与 ~/.zshrc 中的 PATH/Claude 环境配置。
+        process.arguments = [
+            "-lic",
+            #"exec claude -p "/usage" --output-format json"#,
         ]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        try process.run()
+        if finished.wait(timeout: .now() + 30) == .timedOut {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + 2)
+            throw ProviderQuotaError.network("执行超时")
+        }
+        return ClaudeCLICommandResult(
+            status: process.terminationStatus,
+            stdout: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+            stderr: String(
+                decoding: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            )
+        )
     }
 
-    // 仅检查存在性（不取回数据），避免设置页检测时触发授权弹窗
-    private static func claudeKeychainItemExists() -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    private static func isClaudeAuthenticationFailure(_ output: String) -> Bool {
+        let value = output.lowercased()
+        return [
+            "not logged in",
+            "please run /login",
+            "claude auth login",
+            "no oauth token",
+            "oauth token has expired",
+            "oauth token revoked",
+            "authentication_error",
+        ].contains { value.contains($0) }
+    }
+
+    private static func likelyClaudeExecutableExists() -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            home.appendingPathComponent(".local/bin/claude").path,
+            home.appendingPathComponent(".npm-global/bin/claude").path,
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ].contains { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     // MARK: GLM

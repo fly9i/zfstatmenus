@@ -103,25 +103,140 @@ enum ProviderQuotaParseError: LocalizedError {
 enum ProviderQuotaParser {
     // MARK: Claude
 
-    // GET https://api.anthropic.com/api/oauth/usage
-    static func parseClaude(_ data: Data) throws -> ProviderQuota {
-        let object = try jsonObject(data)
+    // claude -p "/usage" --output-format json
+    // JSON 的 result 字段包含订阅额度文本；usage 字段只是本次 CLI 调用的 Token 消耗。
+    static func parseClaudeCLIUsage(
+        _ data: Data,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> ProviderQuota {
+        let output = String(decoding: data, as: UTF8.self)
+        let decoder = JSONDecoder()
+        var envelope: ClaudeCLIUsageEnvelope?
+        for line in output.split(whereSeparator: \.isNewline).reversed() {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            var searchStart = trimmed.startIndex
+            while let brace = trimmed[searchStart...].firstIndex(of: "{") {
+                if let candidate = try? decoder.decode(
+                    ClaudeCLIUsageEnvelope.self,
+                    from: Data(trimmed[brace...].utf8)
+                ) {
+                    envelope = candidate
+                    break
+                }
+                searchStart = trimmed.index(after: brace)
+            }
+            if envelope != nil { break }
+        }
+        guard let envelope else {
+            throw ProviderQuotaParseError.invalidResponse("Claude CLI 未返回有效 JSON")
+        }
+        if envelope.isError == true {
+            throw ProviderQuotaParseError.invalidResponse(envelope.result)
+        }
+
         var quota = ProviderQuota()
-        quota.fiveHour = claudeWindow(object["five_hour"])
-        quota.weekly = claudeWindow(object["seven_day"])
+        quota.fiveHour = claudeCLIWindow(
+            in: envelope.result,
+            labelPattern: #"Current session"#,
+            now: now,
+            calendar: calendar
+        )
+        quota.weekly = claudeCLIWindow(
+            in: envelope.result,
+            labelPattern: #"Current week(?:\s*\([^\r\n)]*\))?"#,
+            now: now,
+            calendar: calendar
+        )
         guard quota.fiveHour != nil || quota.weekly != nil else {
-            throw ProviderQuotaParseError.invalidResponse("Claude 响应缺少额度窗口")
+            throw ProviderQuotaParseError.invalidResponse("Claude CLI 输出中没有订阅额度")
         }
         return quota
     }
 
-    private static func claudeWindow(_ value: Any?) -> QuotaWindow? {
-        guard let dict = value as? [String: Any],
-              let raw = dict["utilization"] as? NSNumber else { return nil }
+    private struct ClaudeCLIUsageEnvelope: Decodable {
+        let result: String
+        let isError: Bool?
+
+        private enum CodingKeys: String, CodingKey {
+            case result
+            case isError = "is_error"
+        }
+    }
+
+    private static func claudeCLIWindow(
+        in text: String,
+        labelPattern: String,
+        now: Date,
+        calendar: Calendar
+    ) -> QuotaWindow? {
+        let pattern = #"(?im)^\#(labelPattern):\s*([0-9]+(?:\.[0-9]+)?)%\s*used(?:\s*[·•]\s*resets\s+([^\r\n]+))?\s*$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..., in: text)
+              ),
+              let percentRange = Range(match.range(at: 1), in: text),
+              let percent = Double(text[percentRange]) else { return nil }
+
+        let resetsAt: Date?
+        if match.range(at: 2).location != NSNotFound,
+           let resetRange = Range(match.range(at: 2), in: text) {
+            resetsAt = claudeCLIResetDate(
+                String(text[resetRange]),
+                now: now,
+                calendar: calendar
+            )
+        } else {
+            resetsAt = nil
+        }
         return QuotaWindow(
-            usedPercent: raw.doubleValue,
-            resetsAt: (dict["resets_at"] as? String).flatMap(parseQuotaTimestamp)
+            usedPercent: min(max(percent, 0), 100),
+            resetsAt: resetsAt
         )
+    }
+
+    private static func claudeCLIResetDate(
+        _ value: String,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        var value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        var timeZone = calendar.timeZone
+        if let expression = try? NSRegularExpression(pattern: #"\s*\(([^()]+)\)\s*$"#),
+           let match = expression.firstMatch(
+            in: value,
+            range: NSRange(value.startIndex..., in: value)
+           ) {
+            if let zoneRange = Range(match.range(at: 1), in: value),
+               let parsedZone = TimeZone(identifier: String(value[zoneRange])) {
+                timeZone = parsedZone
+            }
+            if let suffixRange = Range(match.range(at: 0), in: value) {
+                value.removeSubrange(suffixRange)
+            }
+        }
+
+        for format in [
+            "MMM d 'at' ha",
+            "MMM d 'at' h:mma",
+            "MMM d, yyyy 'at' ha",
+            "MMM d, yyyy 'at' h:mma",
+        ] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = calendar
+            formatter.timeZone = timeZone
+            formatter.defaultDate = now
+            formatter.dateFormat = format
+            guard var date = formatter.date(from: value) else { continue }
+            if !format.contains("yyyy"), date < now.addingTimeInterval(-86_400),
+               let nextYear = calendar.date(byAdding: .year, value: 1, to: date) {
+                date = nextYear
+            }
+            return date
+        }
+        return nil
     }
 
     // MARK: Codex
