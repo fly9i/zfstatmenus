@@ -97,7 +97,8 @@ validate_development_team() {
 
 readonly derived_data_path="${PROJECT_ROOT}/build/RunDerivedData"
 readonly app_path="${derived_data_path}/Build/Products/${configuration}/${PRODUCT_NAME}.app"
-readonly development_team="$(resolve_development_team)"
+development_team="$(resolve_development_team)"
+readonly development_team
 
 build_actions=(build)
 if [[ "$clean_build" == true ]]; then
