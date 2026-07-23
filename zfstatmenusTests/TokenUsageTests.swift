@@ -436,16 +436,23 @@ final class TokenUsageTests: XCTestCase {
                 y: representation.pixelsHigh - 4
             )?.usingColorSpace(.sRGB)
         )
+        let lightCenter = try XCTUnwrap(
+            representation.colorAt(
+                x: representation.pixelsWide - 4,
+                y: 3
+            )?.usingColorSpace(.sRGB)
+        )
         let topChroma = max(topEdge.redComponent, max(topEdge.greenComponent, topEdge.blueComponent))
             - min(topEdge.redComponent, min(topEdge.greenComponent, topEdge.blueComponent))
         let bottomChroma = max(bottomEdge.redComponent, max(bottomEdge.greenComponent, bottomEdge.blueComponent))
             - min(bottomEdge.redComponent, min(bottomEdge.greenComponent, bottomEdge.blueComponent))
-        let edgeColorDistance = abs(topEdge.redComponent - bottomEdge.redComponent)
-            + abs(topEdge.greenComponent - bottomEdge.greenComponent)
-            + abs(topEdge.blueComponent - bottomEdge.blueComponent)
         XCTAssertLessThan(topChroma, 0.04, "分享图渐变顶部应保持中性灰白")
         XCTAssertLessThan(bottomChroma, 0.04, "分享图渐变底部应保持中性灰白")
-        XCTAssertGreaterThan(edgeColorDistance, 0.12, "分享图背景应保留清晰的明暗渐变")
+        XCTAssertGreaterThan(
+            lightCenter.redComponent - max(topEdge.redComponent, bottomEdge.redComponent),
+            0.12,
+            "分享图背景应从两端灰色过渡到中段白色"
+        )
 
         let usdData = try XCTUnwrap(TokenShareSnapshotRenderer.renderPNGData(
             snapshot: snapshot,
