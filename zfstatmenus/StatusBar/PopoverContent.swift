@@ -928,9 +928,9 @@ private struct TokenShareSnapshotView: View {
                         Color(red: 0.06, green: 0.065, blue: 0.07),
                     ]
                     : [
-                        Color(red: 0.94, green: 0.945, blue: 0.95),
-                        Color.white,
-                        Color(red: 0.87, green: 0.88, blue: 0.90),
+                        Color(red: 0.84, green: 0.85, blue: 0.86),
+                        Color(red: 0.965, green: 0.97, blue: 0.975),
+                        Color(red: 0.74, green: 0.755, blue: 0.77),
                     ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
