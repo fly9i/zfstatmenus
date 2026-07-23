@@ -61,33 +61,58 @@ case "$configuration" in
     *) fail "--configuration 只支持 Debug 或 Release" ;;
 esac
 
-for command_name in xcodebuild open pgrep pkill security defaults awk codesign grep; do
+for command_name in xcodebuild open pgrep pkill security defaults openssl codesign grep; do
     command -v "$command_name" >/dev/null 2>&1 || fail "缺少命令：$command_name"
 done
 
-resolve_development_team() {
+resolve_signing_configuration() {
+    local requested_team=""
     if [[ -n "${ZFSTAT_DEVELOPMENT_TEAM:-}" ]]; then
         validate_development_team "$ZFSTAT_DEVELOPMENT_TEAM"
-        printf '%s\n' "$ZFSTAT_DEVELOPMENT_TEAM"
-        return
+        requested_team="$ZFSTAT_DEVELOPMENT_TEAM"
     fi
 
-    local configured_team
-    configured_team="$(defaults read com.zfstat.ZFStatMenus.build DevelopmentTeam 2>/dev/null || true)"
-    if [[ -n "$configured_team" ]]; then
-        validate_development_team "$configured_team"
-        printf '%s\n' "$configured_team"
-        return
+    if [[ -z "$requested_team" ]]; then
+        local configured_team
+        configured_team="$(defaults read com.zfstat.ZFStatMenus.build DevelopmentTeam 2>/dev/null || true)"
+        if [[ -n "$configured_team" ]]; then
+            validate_development_team "$configured_team"
+            requested_team="$configured_team"
+        fi
     fi
 
     local identity_line
-    identity_line="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development:/ { print; exit }')"
-    if [[ "$identity_line" =~ \(([A-Z0-9]{10})\)[[:space:]]*$ ]]; then
-        printf '%s\n' "${BASH_REMATCH[1]}"
-        return
-    fi
+    while IFS= read -r identity_line; do
+        if ! [[ "$identity_line" =~ ^[[:space:]]*[0-9]+\)[[:space:]]+([[:xdigit:]]{40})[[:space:]]+\"(Apple[[:space:]]Development:[^\"]+)\"[[:space:]]*$ ]]; then
+            continue
+        fi
 
-    fail "未找到 Apple Development 签名证书；请先在 Xcode 登录开发者账号并创建证书，或设置 ZFSTAT_DEVELOPMENT_TEAM"
+        local candidate_identity="${BASH_REMATCH[1]}"
+        local candidate_name="${BASH_REMATCH[2]}"
+        local certificate_subject
+        certificate_subject="$(
+            security find-certificate -c "$candidate_name" -p 2>/dev/null |
+                openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null
+        )" || continue
+
+        if ! [[ "$certificate_subject" =~ (^|,)OU=([A-Z0-9]{10})(,|$) ]]; then
+            continue
+        fi
+
+        local candidate_team="${BASH_REMATCH[2]}"
+        if [[ -n "$requested_team" && "$candidate_team" != "$requested_team" ]]; then
+            continue
+        fi
+
+        signing_identity="$candidate_identity"
+        development_team="$candidate_team"
+        return
+    done < <(security find-identity -v -p codesigning 2>/dev/null)
+
+    if [[ -n "$requested_team" ]]; then
+        fail "未找到开发团队 ${requested_team} 对应的 Apple Development 签名身份"
+    fi
+    fail "未找到有效的 Apple Development 签名身份；请确认登录钥匙串中同时存在证书及其私钥"
 }
 
 validate_development_team() {
@@ -97,8 +122,11 @@ validate_development_team() {
 
 readonly derived_data_path="${PROJECT_ROOT}/build/RunDerivedData"
 readonly app_path="${derived_data_path}/Build/Products/${configuration}/${PRODUCT_NAME}.app"
-development_team="$(resolve_development_team)"
+development_team=""
+signing_identity=""
+resolve_signing_configuration
 readonly development_team
+readonly signing_identity
 
 build_actions=(build)
 if [[ "$clean_build" == true ]]; then
@@ -115,10 +143,9 @@ xcodebuild \
     -configuration "$configuration" \
     -destination "generic/platform=macOS" \
     -derivedDataPath "$derived_data_path" \
-    -allowProvisioningUpdates \
     DEVELOPMENT_TEAM="$development_team" \
-    CODE_SIGN_STYLE=Automatic \
-    CODE_SIGN_IDENTITY="Apple Development" \
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_IDENTITY="$signing_identity" \
     CODE_SIGNING_ALLOWED=YES \
     CODE_SIGNING_REQUIRED=YES \
     "${build_actions[@]}"
